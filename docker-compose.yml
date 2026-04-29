@@ -1,0 +1,41 @@
+# Moloni console — bind web only to loopback so your host nginx can reverse-proxy without touching other sites.
+#
+# Usage:
+#   cp backend/.env.example .env   # then edit .env next to this file
+#   docker compose build && docker compose up -d
+#
+# Host port (default 9080): MOLONI_CONSOLE_BIND=9080 docker compose up -d
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    env_file:
+      - .env
+    expose:
+      - "8000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)",
+        ]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 40s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${MOLONI_CONSOLE_BIND:-9080}:80"
+    restart: unless-stopped
