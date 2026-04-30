@@ -228,21 +228,24 @@ table.invoice-lines-table tr.invoice-line-r2 td {
   padding-bottom: 0.65rem;
 }
 
-table.invoice-lines-table .invoice-ean-label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
 table.invoice-lines-table .invoice-input-ean {
   font-family: ui-monospace, Menlo, monospace;
   font-size: 0.875rem;
   letter-spacing: 0.03em;
-  max-width: 28rem;
+  width: 100%;
+  min-width: 14rem;
 }
 
-table.invoice-lines-table .invoice-td-r2-spacer {
-  border-bottom: 2px solid var(--border);
+table.invoice-lines-table .invoice-td-desc {
+  vertical-align: top;
+}
+
+table.invoice-lines-table .invoice-input-desc {
+  width: 100%;
+  min-height: 2.75rem;
+  resize: vertical;
+  font-size: 0.8125rem;
+  line-height: 1.35;
 }
 
 .invoice-totals-block {

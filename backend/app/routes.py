@@ -7,7 +7,11 @@ from pydantic import BaseModel
 
 from app.config import Settings, get_settings
 from app.deps import MoloniDep, require_auth
-from app.moloni_categories import fetch_all_categories_parallel, fetch_categories_level
+from app.moloni_categories import (
+    fetch_all_categories_parallel,
+    fetch_categories_level,
+    normalize_category_list,
+)
 from app.moloni_client import MoloniAPIError
 from app.moloni_invoices import build_supplier_invoice_update
 from app.moloni_products import (
@@ -99,10 +103,13 @@ async def get_supplier_invoice_detail(
             "products/getOne",
             {"company_id": settings.moloni_company_id, "product_id": pid},
         )
+    raw_cats = await fetch_all_categories_parallel(moloni, settings.moloni_company_id)
+    categories = normalize_category_list(raw_cats if isinstance(raw_cats, list) else [])
     return {
         "document": doc,
         "products": products,
         "retail_vat_percent": float(settings.moloni_default_retail_vat_percent),
+        "categories": categories,
     }
 
 
@@ -258,17 +265,19 @@ async def list_categories(
     request: Request,
     moloni: MoloniDep,
     parent_id: int = 0,
-    recursive: bool = False,
+    recursive: int = 0,
     settings: Settings = Depends(get_settings),
 ) -> list[Any]:
     """
     Default: one Moloni level (``parent_id``, usually ``0`` for roots) — fast for the Categories UI.
-    ``recursive=1``: full tree via parallel BFS (for product / invoice dropdowns).
+    ``recursive=1`` (or any non-zero): full tree via parallel BFS (dropdowns). Uses int so ``?recursive=1`` always works.
     """
     require_auth(request)
-    if recursive:
-        return await fetch_all_categories_parallel(moloni, settings.moloni_company_id)
-    return await fetch_categories_level(moloni, settings.moloni_company_id, parent_id)
+    if recursive != 0:
+        raw = await fetch_all_categories_parallel(moloni, settings.moloni_company_id)
+        return normalize_category_list(raw if isinstance(raw, list) else [])
+    raw_level = await fetch_categories_level(moloni, settings.moloni_company_id, parent_id)
+    return normalize_category_list(raw_level if isinstance(raw_level, list) else [])
 
 
 class CategoryCreate(BaseModel):
@@ -402,6 +411,7 @@ class BulkProductRow(BaseModel):
     pvp: float | None = None
     category_id: int | None = None
     name: str | None = None
+    summary: str | None = None
 
 
 class BulkProductUpdateBody(BaseModel):
@@ -431,6 +441,8 @@ async def bulk_update_products(
                 patch["ean"] = row.ean
             if row.name is not None:
                 patch["name"] = row.name
+            if row.summary is not None:
+                patch["summary"] = row.summary
             if row.category_id is not None:
                 patch["category_id"] = row.category_id
             # PVP (com IVA) wins over raw net price so accidental price:0 never skips the retail update.

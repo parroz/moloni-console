@@ -20,6 +20,28 @@ async def fetch_categories_level(client: MoloniClient, company_id: int, parent_i
     )
 
 
+def normalize_category_list(items: list[Any]) -> list[dict[str, Any]]:
+    """Moloni rows as {category_id, parent_id, name} with ints (API may return strings)."""
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            cid = item.get("category_id")
+            if cid is None:
+                continue
+            out.append(
+                {
+                    "category_id": int(cid),
+                    "parent_id": int(item.get("parent_id", 0) or 0),
+                    "name": str(item.get("name", "")),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 async def fetch_all_categories_parallel(
     client: MoloniClient,
     company_id: int,

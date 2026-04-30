@@ -14,6 +14,7 @@ type ProductOne = {
   product_id: number;
   reference?: string;
   name?: string;
+  summary?: string;
   ean?: string;
   price?: number;
   category_id?: number;
@@ -24,6 +25,7 @@ type InvLine = {
   product_id: number;
   reference?: string;
   name?: string;
+  summary?: string;
   qty?: number;
   price?: number;
   discount?: number;
@@ -49,9 +51,14 @@ type Doc = {
   products: InvLine[];
 };
 
-type Detail = { document: Doc; products: Record<string, ProductOne | null>; retail_vat_percent?: number };
-
 type CatRow = { category_id: number; parent_id: number; name: string };
+
+type Detail = {
+  document: Doc;
+  products: Record<string, ProductOne | null>;
+  retail_vat_percent?: number;
+  categories?: CatRow[];
+};
 
 function initialCategoryParentChild(cid: number, cats: CatRow[]): { parentId: number; leafId: number } {
   if (!cid || !cats.length) return { parentId: 0, leafId: 0 };
@@ -82,6 +89,8 @@ type RowState = {
   retailPvp: number;
   productVatPercent: number;
   ean: string;
+  /** Descrição / resumo (produto ou linha). */
+  summary: string;
   /** Moloni root category (parent_id === 0) for the first dropdown. */
   categoryParentId: number;
   /** Moloni category_id to save (subcategory or root). */
@@ -99,11 +108,6 @@ export default function InvoiceDetailPage() {
     enabled: Number.isFinite(id),
   });
 
-  const catQ = useQuery({
-    queryKey: ["categories", "recursive"],
-    queryFn: () => apiJson<CatRow[]>("/moloni/categories?recursive=true"),
-  });
-
   const [rows, setRows] = useState<RowState[]>([]);
   const [header, setHeader] = useState({
     date: "",
@@ -118,7 +122,7 @@ export default function InvoiceDetailPage() {
 
   useEffect(() => {
     const d = detailQ.data;
-    const cats = catQ.data ?? [];
+    const cats = d.categories ?? [];
     if (!d?.document) return;
     const doc = d.document;
     setHeader({
@@ -150,6 +154,7 @@ export default function InvoiceDetailPage() {
           retailPvp: 0,
           productVatPercent: retailRate,
           ean: "",
+          summary: String(line.summary ?? ""),
           categoryParentId: 0,
           categoryId: 0,
         });
@@ -171,15 +176,18 @@ export default function InvoiceDetailPage() {
         retailPvp: pvpFromPv(pv, rate),
         productVatPercent: rate,
         ean: String(p.ean ?? ""),
+        summary: String(line.summary ?? p.summary ?? ""),
         categoryParentId: parentId,
         categoryId: leafId,
       });
     }
     setRows(next);
-  }, [detailQ.data, catQ.data]);
+  }, [detailQ.data]);
 
   const bulkMut = useMutation({
-    mutationFn: (items: { product_id: number; ean?: string; pvp?: number; category_id?: number; name?: string }[]) =>
+    mutationFn: (
+      items: { product_id: number; ean?: string; pvp?: number; category_id?: number; name?: string; summary?: string }[],
+    ) =>
       apiJson<{ results: { product_id: number; ok: boolean; error?: string }[] }>("/moloni/products/bulk-update", {
         method: "POST",
         body: JSON.stringify({ items }),
@@ -243,7 +251,14 @@ export default function InvoiceDetailPage() {
     return { pv, pvp };
   }, [rows]);
 
-  const categories = catQ.data ?? [];
+  const categories = useMemo(() => {
+    const raw = detailQ.data?.categories ?? [];
+    return raw.map((c) => ({
+      category_id: Number(c.category_id),
+      parent_id: Number(c.parent_id ?? 0),
+      name: String(c.name ?? ""),
+    }));
+  }, [detailQ.data?.categories]);
   const rootCategories = useMemo(
     () => [...categories].filter((c) => c.parent_id === 0).sort((a, b) => a.name.localeCompare(b.name)),
     [categories],
@@ -322,12 +337,14 @@ export default function InvoiceDetailPage() {
         ean: string;
         pvp: number;
         name: string;
+        summary: string;
         category_id?: number;
       } = {
         product_id: r.productId,
         ean: r.ean,
         pvp: Math.round(r.retailPvp * 100) / 100,
         name: r.lineName,
+        summary: r.summary,
       };
       if (r.categoryId > 0) item.category_id = r.categoryId;
       return item;
@@ -344,6 +361,7 @@ export default function InvoiceDetailPage() {
       price: r.lineUnitPrice,
       discount: r.discount,
       name: r.lineName,
+      summary: r.summary,
     }));
     docMut.mutate({
       header: {
@@ -444,11 +462,9 @@ export default function InvoiceDetailPage() {
             </h2>
             <p className="muted no-print" style={{ margin: "0.25rem 0 0.75rem", maxWidth: "52rem" }}>
               Retalho: edite só o <strong>PVP</strong> (€ com IVA, 2 decimais). O preço líquido no Moloni segue{" "}
-              <code>PVP / (1 + IVA/100)</code>. «IVA linha» é o IVA da fatura de compra; «IVA venda» é a taxa configurada
-              no servidor. Cada linha tem duas linhas na grelha: ref. ampla + dados; abaixo EAN ampla.
+              <code>PVP / (1 + IVA/100)</code>. «IVA linha» é o IVA da fatura de compra. Categorias vêm no mesmo pedido
+              que a fatura. Segunda linha: descrição e EAN.
             </p>
-            {catQ.isLoading ? <p className="muted no-print">A carregar categorias Moloni…</p> : null}
-            {catQ.error ? <p className="error no-print">{(catQ.error as Error).message}</p> : null}
             <div style={{ overflow: "auto" }}>
               <table className="data invoice-lines-table">
                 <thead>
@@ -459,7 +475,6 @@ export default function InvoiceDetailPage() {
                     <th>Custo unit.</th>
                     <th>Custo total</th>
                     <th>IVA linha %</th>
-                    <th>IVA venda %</th>
                     <th>PVP (c/ IVA)</th>
                     <th>Categoria</th>
                     <th>Subcategoria</th>
@@ -505,7 +520,6 @@ export default function InvoiceDetailPage() {
                           </td>
                           <td>{(r.qty * r.lineUnitPrice).toFixed(2)}</td>
                           <td>{r.lineVatPercent}%</td>
-                          <td>{r.productVatPercent}%</td>
                           <td>
                             <input
                               type="number"
@@ -543,19 +557,23 @@ export default function InvoiceDetailPage() {
                           </td>
                         </tr>
                         <tr className="invoice-line-r2">
-                          <td colSpan={6} className="invoice-td-ean">
-                            <label className="invoice-ean-label">
-                              <span className="muted">EAN</span>
-                              <input
-                                className="invoice-input-ean"
-                                value={r.ean}
-                                maxLength={20}
-                                onChange={(e) => updateRow(i, { ean: e.target.value })}
-                                placeholder="13–20 caracteres"
-                              />
-                            </label>
+                          <td colSpan={5} className="invoice-td-desc">
+                            <textarea
+                              className="invoice-input-desc"
+                              value={r.summary}
+                              rows={2}
+                              onChange={(e) => updateRow(i, { summary: e.target.value })}
+                              placeholder="Descrição"
+                            />
                           </td>
-                          <td colSpan={3} className="invoice-td-r2-spacer muted no-print" />
+                          <td colSpan={4} className="invoice-td-ean">
+                            <input
+                              className="invoice-input-ean"
+                              value={r.ean}
+                              maxLength={20}
+                              onChange={(e) => updateRow(i, { ean: e.target.value })}
+                            />
+                          </td>
                         </tr>
                       </Fragment>
                     );

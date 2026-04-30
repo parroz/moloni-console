@@ -16,7 +16,7 @@ type Prod = {
 export default function ProductsPage() {
   const catQ = useQuery({
     queryKey: ["categories", "recursive"],
-    queryFn: () => apiJson<Cat[]>("/moloni/categories?recursive=true"),
+    queryFn: () => apiJson<Cat[]>("/moloni/categories?recursive=1"),
   });
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [offset, setOffset] = useState(0);
