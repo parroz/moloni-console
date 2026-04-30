@@ -204,6 +204,45 @@ table.data select {
   border-left: 1px solid var(--border);
 }
 
+.invoice-totals-block {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 2px solid var(--border);
+}
+
+.invoice-totals-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.invoice-totals-hint {
+  margin: 0 0 0.65rem;
+  font-size: 0.82rem;
+  max-width: 52rem;
+}
+
+.invoice-totals-table {
+  max-width: 28rem;
+}
+
+.invoice-totals-table th[scope="row"] {
+  width: 55%;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.invoice-totals-table td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.invoice-totals-strong th,
+.invoice-totals-strong td {
+  font-weight: 700;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
 @media print {
   .no-print {
     display: none !important;

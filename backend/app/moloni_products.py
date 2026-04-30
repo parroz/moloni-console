@@ -5,15 +5,23 @@ from __future__ import annotations
 from typing import Any
 
 
+def _tax_row_saft_type(t: dict[str, Any]) -> int:
+    """Moloni usually nests saft_type under tax{}; some payloads expose it on the row."""
+    tax = t.get("tax") or {}
+    st = int(tax.get("saft_type", 0) or 0) or int(t.get("saft_type", 0) or 0)
+    return st
+
+
 def _has_iva_tax(taxes: list[dict[str, Any]] | None) -> bool:
     if not taxes:
         return False
     for t in taxes:
+        if _tax_row_saft_type(t) != 1:
+            continue
         tax = t.get("tax") or {}
-        if int(tax.get("saft_type", 0) or 0) == 1:
-            val = float(t.get("value", 0) or 0)
-            if val > 0:
-                return True
+        val = float(t.get("value", tax.get("value", 0)) or 0)
+        if val > 0:
+            return True
     return False
 
 
@@ -89,18 +97,27 @@ def build_product_update_body(company_id: int, full: dict[str, Any], patch: dict
 
 
 def pvp_from_pv(pv: float, tax_rate_percent: float) -> float:
-    return round(pv * (1 + tax_rate_percent / 100.0), 4)
+    """PVP (com IVA) for UI: 2 decimal places."""
+    pv_n = float(pv)
+    if tax_rate_percent <= -100:
+        return round(pv_n, 2)
+    gross = pv_n * (1 + tax_rate_percent / 100.0)
+    return round(gross, 2)
 
 
 def pv_from_pvp(pvp: float, tax_rate_percent: float) -> float:
+    """Net unit price in Moloni (sem IVA): round PVP to 2 dp first, then PV to 4 dp (PV = PVP / (1 + tax%))."""
+    pvp_n = round(float(pvp), 2)
     if tax_rate_percent <= -100:
-        return round(pvp, 4)
-    return round(pvp / (1 + tax_rate_percent / 100.0), 4)
+        return round(pvp_n, 4)
+    pv = pvp_n / (1 + tax_rate_percent / 100.0)
+    return round(pv, 4)
 
 
 def primary_tax_rate_percent(full: dict[str, Any]) -> float:
     for t in full.get("taxes") or []:
+        if _tax_row_saft_type(t) != 1:
+            continue
         tax = t.get("tax") or {}
-        if int(tax.get("saft_type", 0) or 0) == 1:
-            return float(t.get("value", tax.get("value", 0)) or 0)
+        return float(t.get("value", tax.get("value", 0)) or 0)
     return 0.0

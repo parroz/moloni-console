@@ -352,6 +352,8 @@ async def get_product(request: Request, moloni: MoloniDep, product_id: int, sett
 class ProductPatch(BaseModel):
     ean: str | None = None
     price: float | None = None
+    """Preço de venda com IVA (PVP); convertido para price sem IVA antes de gravar no Moloni."""
+    pvp: float | None = None
     category_id: int | None = None
     name: str | None = None
     summary: str | None = None
@@ -374,6 +376,10 @@ async def update_product(
     if not isinstance(full, dict) or "product_id" not in full:
         raise HTTPException(404, "Product not found")
     patch = body.model_dump(exclude_none=True)
+    pvp = patch.pop("pvp", None)
+    if pvp is not None:
+        rate = primary_tax_rate_percent(full)
+        patch["price"] = pv_from_pvp(float(pvp), rate)
     payload = build_product_update_body(settings.moloni_company_id, full, patch)
     return await moloni.post("products/update", payload)
 
@@ -416,11 +422,12 @@ async def bulk_update_products(
                 patch["name"] = row.name
             if row.category_id is not None:
                 patch["category_id"] = row.category_id
-            if row.price is not None:
-                patch["price"] = row.price
-            elif row.pvp is not None:
+            # PVP (com IVA) wins over raw net price so accidental price:0 never skips the retail update.
+            if row.pvp is not None:
                 rate = primary_tax_rate_percent(full)
                 patch["price"] = pv_from_pvp(float(row.pvp), rate)
+            elif row.price is not None:
+                patch["price"] = row.price
             payload = build_product_update_body(settings.moloni_company_id, full, patch)
             res = await moloni.post("products/update", payload)
             results.append({"product_id": row.product_id, "ok": True, "result": res})

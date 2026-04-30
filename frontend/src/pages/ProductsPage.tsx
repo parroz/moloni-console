@@ -98,7 +98,7 @@ export default function ProductsPage() {
                     <td>{p.name}</td>
                     <td>{p.ean}</td>
                     <td>{pv.toFixed(4)}</td>
-                    <td>{pvp.toFixed(4)}</td>
+                    <td>{pvp.toFixed(2)}</td>
                   </tr>
                 );
               })}

@@ -42,6 +42,10 @@ type Doc = {
   status?: number;
   financial_discount?: number;
   special_discount?: number;
+  /** Moloni document totals (reference). */
+  net_value?: number;
+  taxes_value?: number;
+  gross_value?: number;
   products: InvLine[];
 };
 
@@ -184,6 +188,31 @@ export default function InvoiceDetailPage() {
     },
   });
 
+  /** Purchase-side totals from current rows (custo na fatura: qty × preço × (1 − desconto%), + IVA linha). */
+  const purchaseTotals = useMemo(() => {
+    let net = 0;
+    let vat = 0;
+    for (const r of rows) {
+      const disc = Math.min(100, Math.max(0, Number(r.discount) || 0));
+      const lineNet = r.qty * r.lineUnitPrice * (1 - disc / 100);
+      net += lineNet;
+      vat += lineNet * ((Number(r.lineVatPercent) || 0) / 100);
+    }
+    const gross = net + vat;
+    return { net, vat, gross };
+  }, [rows]);
+
+  /** Retail reference: sum of qty × PV / PVP (not necessarily igual ao documento Moloni). */
+  const retailTotals = useMemo(() => {
+    let pv = 0;
+    let pvp = 0;
+    for (const r of rows) {
+      pv += r.qty * r.retailPv;
+      pvp += r.qty * r.retailPvp;
+    }
+    return { pv, pvp };
+  }, [rows]);
+
   const categories = catQ.data ?? [];
   const catOptions = useMemo(
     () =>
@@ -200,7 +229,8 @@ export default function InvoiceDetailPage() {
       const cur = { ...base, ...patch };
       const rate = cur.productVatPercent;
       if (patch.retailPvp != null) {
-        const pvp = Number(patch.retailPvp);
+        const raw = Number(patch.retailPvp);
+        const pvp = Number.isFinite(raw) ? Math.round(raw * 100) / 100 : 0;
         cur.retailPvp = pvp;
         cur.retailPv = pvFromPvp(pvp, rate);
       } else if (patch.retailPv != null) {
@@ -239,10 +269,15 @@ export default function InvoiceDetailPage() {
   function pushProducts() {
     setMsg(null);
     setErr(null);
+    const bad = rows.filter((r) => !Number.isFinite(r.retailPvp));
+    if (bad.length) {
+      setErr(`PVP inválido (número) nas linhas: ${bad.map((r) => r.reference || r.productId).join(", ")}`);
+      return;
+    }
     const items = rows.map((r) => ({
       product_id: r.productId,
       ean: r.ean,
-      pvp: r.retailPvp,
+      pvp: Math.round(r.retailPvp * 100) / 100,
       category_id: r.categoryId,
       name: r.lineName,
     }));
@@ -407,7 +442,8 @@ export default function InvoiceDetailPage() {
                       <td>
                         <input
                           type="number"
-                          step="0.0001"
+                          step="0.01"
+                          min={0}
                           value={r.retailPvp}
                           onChange={(e) => updateRow(i, { retailPvp: Number(e.target.value) })}
                         />
@@ -429,6 +465,62 @@ export default function InvoiceDetailPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+
+            <div className="invoice-totals-block">
+              <h3 className="invoice-totals-title">Totais — custo na fatura (linhas)</h3>
+              <p className="muted invoice-totals-hint">
+                Base sem IVA, IVA calculado pela taxa de cada linha, total com IVA. Desconto de linha tratado como % (0–100),
+                como na API Moloni.
+              </p>
+              <table className="data invoice-totals-table">
+                <tbody>
+                  <tr>
+                    <th scope="row">Total s/ IVA (base)</th>
+                    <td>{purchaseTotals.net.toFixed(2)} €</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">IVA</th>
+                    <td>{purchaseTotals.vat.toFixed(2)} €</td>
+                  </tr>
+                  <tr className="invoice-totals-strong">
+                    <th scope="row">Total c/ IVA</th>
+                    <td>{purchaseTotals.gross.toFixed(2)} €</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <h3 className="invoice-totals-title" style={{ marginTop: "1.25rem" }}>
+                Totais — retalho (referência PVP)
+              </h3>
+              <p className="muted invoice-totals-hint">Soma de quantidade × PV e × PVP (preços de venda no artigo).</p>
+              <table className="data invoice-totals-table">
+                <tbody>
+                  <tr>
+                    <th scope="row">Total PV (s/ IVA)</th>
+                    <td>{retailTotals.pv.toFixed(2)} €</td>
+                  </tr>
+                  <tr className="invoice-totals-strong">
+                    <th scope="row">Total PVP (c/ IVA)</th>
+                    <td>{retailTotals.pvp.toFixed(2)} €</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              {detailQ.data.document.net_value != null && detailQ.data.document.taxes_value != null ? (
+                <p className="muted invoice-totals-hint" style={{ marginTop: "1rem" }}>
+                  Valores no documento Moloni (referência): líquido{" "}
+                  <strong>{Number(detailQ.data.document.net_value).toFixed(2)} €</strong> · IVA{" "}
+                  <strong>{Number(detailQ.data.document.taxes_value).toFixed(2)} €</strong>
+                  {detailQ.data.document.gross_value != null ? (
+                    <>
+                      {" "}
+                      · bruto <strong>{Number(detailQ.data.document.gross_value).toFixed(2)} €</strong>
+                    </>
+                  ) : null}
+                  . Podem diferir ligeiramente dos totais calculados se houver arredondamentos ou descontos globais.
+                </p>
+              ) : null}
             </div>
           </div>
 
