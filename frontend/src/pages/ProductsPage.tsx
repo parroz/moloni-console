@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { apiJson } from "../api";
-import { effectiveRetailVatPercentFromProduct, pvpFromPv } from "../moloniUtils";
+import { DEFAULT_RETAIL_VAT_PERCENT, pvpFromPv } from "../moloniUtils";
 
 type Cat = { category_id: number; parent_id: number; name: string };
 type Prod = {
@@ -29,6 +29,12 @@ export default function ProductsPage() {
     const pick = roots[0]?.category_id ?? cats[0]?.category_id;
     if (pick != null) setCategoryId(pick);
   }, [catQ.data, categoryId]);
+
+  const configQ = useQuery({
+    queryKey: ["app-config"],
+    queryFn: () => apiJson<{ retail_vat_percent: number }>("/config"),
+  });
+  const retailVat = configQ.data?.retail_vat_percent ?? DEFAULT_RETAIL_VAT_PERCENT;
 
   const prodQ = useQuery({
     queryKey: ["products", categoryId, offset],
@@ -88,7 +94,7 @@ export default function ProductsPage() {
             </thead>
             <tbody>
               {accum.map((p) => {
-                const rate = effectiveRetailVatPercentFromProduct(p);
+                const rate = retailVat;
                 const pv = Number(p.price ?? 0);
                 const pvp = pvpFromPv(pv, rate);
                 return (

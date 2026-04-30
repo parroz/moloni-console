@@ -114,26 +114,14 @@ def pv_from_pvp(pvp: float, tax_rate_percent: float) -> float:
     return round(pv, 4)
 
 
-def primary_tax_rate_percent(full: dict[str, Any]) -> float:
-    for t in full.get("taxes") or []:
-        if _tax_row_saft_type(t) != 1:
-            continue
-        tax = t.get("tax") or {}
-        return float(t.get("value", tax.get("value", 0)) or 0)
-    return 0.0
+def effective_retail_vat_percent(_full: dict[str, Any], *, fallback_percent: float) -> float:
+    """Legal IVA % used only for PVP ↔ preço sem IVA (``pv_from_pvp`` / ``pvp_from_pv``).
 
+    Moloni's product tax ``value`` is often the **IVA amount in currency** for the current net
+    unit price, not the rate (6 / 13 / 23). Using it as a % breaks the reversal. Pricing
+    therefore uses **only** the configured rate (``MOLONI_DEFAULT_RETAIL_VAT_PERCENT``, default 23).
 
-def effective_retail_vat_percent(full: dict[str, Any], *, fallback_percent: float) -> float:
-    """IVA % for PVP ↔ net price.
-
-    - If Moloni omits IVA (0%), use fallback (e.g. 23).
-    - If Moloni returns a nonsense rate above PT normal VAT (23%), the API often put a
-      non-percent field in ``value`` — treat as missing and use fallback so PVP/1.23 works.
+    Model: ``pvp = pv + pv * (rate/100)`` ⇒ ``pv = pvp / (1 + rate/100)``.
     """
-    r = primary_tax_rate_percent(full)
-    if r <= 0:
-        return float(fallback_percent) if fallback_percent > 0 else 0.0
-    # PT IVA normal máximo 23%; valores como ~28% vêm de campos errados na resposta.
-    if r > 23.01:
-        return float(fallback_percent) if fallback_percent > 0 else r
-    return r
+    f = float(fallback_percent)
+    return f if f > 0 else 0.0

@@ -43,6 +43,13 @@ async def me(request: Request) -> dict[str, bool]:
     return {"authenticated": True}
 
 
+@router.get("/config")
+async def app_config(request: Request, settings: Settings = Depends(get_settings)) -> dict[str, float]:
+    """Non-secret UI settings (authenticated)."""
+    require_auth(request)
+    return {"retail_vat_percent": float(settings.moloni_default_retail_vat_percent)}
+
+
 # --- Moloni proxy (authenticated) ---
 
 
@@ -92,7 +99,11 @@ async def get_supplier_invoice_detail(
             "products/getOne",
             {"company_id": settings.moloni_company_id, "product_id": pid},
         )
-    return {"document": doc, "products": products}
+    return {
+        "document": doc,
+        "products": products,
+        "retail_vat_percent": float(settings.moloni_default_retail_vat_percent),
+    }
 
 
 class SupplierInvoiceHeaderUpdate(BaseModel):

@@ -3,9 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiJson } from "../api";
 import {
+  DEFAULT_RETAIL_VAT_PERCENT,
   pvFromPvp,
   pvpFromPv,
-  effectiveRetailVatPercentFromProduct,
   vatRateFromLineTaxes,
   type MoloniTaxRow,
 } from "../moloniUtils";
@@ -49,7 +49,7 @@ type Doc = {
   products: InvLine[];
 };
 
-type Detail = { document: Doc; products: Record<string, ProductOne | null> };
+type Detail = { document: Doc; products: Record<string, ProductOne | null>; retail_vat_percent?: number };
 
 type RowState = {
   productId: number;
@@ -108,6 +108,10 @@ export default function InvoiceDetailPage() {
       status: Number(doc.status ?? 0),
     });
     const next: RowState[] = [];
+    const retailRate =
+      typeof d.retail_vat_percent === "number" && Number.isFinite(d.retail_vat_percent)
+        ? d.retail_vat_percent
+        : DEFAULT_RETAIL_VAT_PERCENT;
     for (const line of doc.products || []) {
       const pid = Number(line.product_id);
       const p = d.products[String(pid)] as ProductOne | null | undefined;
@@ -122,13 +126,13 @@ export default function InvoiceDetailPage() {
           discount: Number(line.discount ?? 0),
           retailPv: 0,
           retailPvp: 0,
-          productVatPercent: 0,
+          productVatPercent: retailRate,
           ean: "",
           categoryId: 0,
         });
         continue;
       }
-      const rate = effectiveRetailVatPercentFromProduct(p);
+      const rate = retailRate;
       const pv = Number(p.price ?? 0);
       next.push({
         productId: pid,
@@ -388,9 +392,11 @@ export default function InvoiceDetailPage() {
               Linhas
             </h2>
             <p className="muted no-print" style={{ margin: "0.25rem 0 0.75rem", maxWidth: "52rem" }}>
-              Retalho: edite só o <strong>PVP</strong> (€ com IVA, 2 decimais). O <strong>PV</strong> sem IVA é calculado (4
-              decimais) e corresponde ao preço gravado no Moloni. «IVA linha» refere-se à fatura de compra; «IVA venda» é a
-              taxa usada no PVP (artigo no Moloni, ou 23% se a API não indicar IVA normalizado).
+              Retalho: edite só o <strong>PVP</strong> (€ com IVA, 2 decimais). O <strong>PV</strong> sem IVA é{" "}
+              <code>PVP / (1 + IVA/100)</code> (4 decimais) e é o preço líquido gravado no Moloni. «IVA linha» é o IVA da
+              fatura de compra. «IVA venda» é a taxa legal usada neste cálculo (servidor:{" "}
+              <code>MOLONI_DEFAULT_RETAIL_VAT_PERCENT</code>
+              ); no Moloni o campo de IVA do artigo pode ser um <strong>valor absoluto em €</strong>, não a percentagem.
             </p>
             <div style={{ overflow: "auto" }}>
               <table className="data">
