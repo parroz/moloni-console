@@ -57,7 +57,6 @@ type Detail = {
   document: Doc;
   products: Record<string, ProductOne | null>;
   retail_vat_percent?: number;
-  categories?: CatRow[];
 };
 
 function initialCategoryParentChild(cid: number, cats: CatRow[]): { parentId: number; leafId: number } {
@@ -108,6 +107,14 @@ export default function InvoiceDetailPage() {
     enabled: Number.isFinite(id),
   });
 
+  /** Carregado à parte para a fatura abrir de imediato (árvore completa pode ser lenta no Moloni). */
+  const catQ = useQuery({
+    queryKey: ["categories", "recursive"],
+    queryFn: () => apiJson<CatRow[]>("/moloni/categories?recursive=1"),
+    enabled: Boolean(detailQ.isSuccess && detailQ.data?.document),
+    staleTime: 5 * 60 * 1000,
+  });
+
   const [rows, setRows] = useState<RowState[]>([]);
   const [header, setHeader] = useState({
     date: "",
@@ -122,7 +129,7 @@ export default function InvoiceDetailPage() {
 
   useEffect(() => {
     const d = detailQ.data;
-    const cats = d.categories ?? [];
+    const cats = catQ.data ?? [];
     if (!d?.document) return;
     const doc = d.document;
     setHeader({
@@ -182,7 +189,7 @@ export default function InvoiceDetailPage() {
       });
     }
     setRows(next);
-  }, [detailQ.data]);
+  }, [detailQ.data, catQ.data]);
 
   const bulkMut = useMutation({
     mutationFn: (
@@ -252,13 +259,13 @@ export default function InvoiceDetailPage() {
   }, [rows]);
 
   const categories = useMemo(() => {
-    const raw = detailQ.data?.categories ?? [];
+    const raw = catQ.data ?? [];
     return raw.map((c) => ({
       category_id: Number(c.category_id),
       parent_id: Number(c.parent_id ?? 0),
       name: String(c.name ?? ""),
     }));
-  }, [detailQ.data?.categories]);
+  }, [catQ.data]);
   const rootCategories = useMemo(
     () => [...categories].filter((c) => c.parent_id === 0).sort((a, b) => a.name.localeCompare(b.name)),
     [categories],
@@ -462,9 +469,11 @@ export default function InvoiceDetailPage() {
             </h2>
             <p className="muted no-print" style={{ margin: "0.25rem 0 0.75rem", maxWidth: "52rem" }}>
               Retalho: edite só o <strong>PVP</strong> (€ com IVA, 2 decimais). O preço líquido no Moloni segue{" "}
-              <code>PVP / (1 + IVA/100)</code>. «IVA linha» é o IVA da fatura de compra. Categorias vêm no mesmo pedido
-              que a fatura. Segunda linha: descrição e EAN.
+              <code>PVP / (1 + IVA/100)</code>. «IVA linha» é o IVA da fatura de compra. As categorias carregam num
+              segundo pedido para a página não ficar presa. Segunda linha: descrição e EAN.
             </p>
+            {catQ.isFetching ? <p className="muted no-print">A carregar categorias…</p> : null}
+            {catQ.error ? <p className="error no-print">{(catQ.error as Error).message}</p> : null}
             <div style={{ overflow: "auto" }}>
               <table className="data invoice-lines-table">
                 <thead>

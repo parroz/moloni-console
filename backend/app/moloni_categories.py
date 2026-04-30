@@ -46,19 +46,23 @@ async def fetch_all_categories_parallel(
     client: MoloniClient,
     company_id: int,
     *,
-    concurrency: int = 10,
+    concurrency: int = 6,
     max_categories: int = 8000,
+    max_waves: int = 500,
 ) -> list[dict[str, Any]]:
     """
     Full tree: BFS in waves, many ``getAll`` calls in parallel per wave.
     Used for dropdowns (products / invoice). Avoids one giant sequential chain that times out the browser.
+    ``max_waves`` caps Moloni misbehaviour (non-empty pages forever) so the server cannot hang indefinitely.
     """
     out: list[dict[str, Any]] = []
     seen_cat: set[int] = set()
     fetched_parent: set[int] = set()
     queue: deque[int] = deque([0])
+    waves = 0
 
-    while queue and len(seen_cat) < max_categories:
+    while queue and len(seen_cat) < max_categories and waves < max_waves:
+        waves += 1
         batch: list[int] = []
         while queue and len(batch) < concurrency:
             p = queue.popleft()

@@ -111,10 +111,18 @@ class MoloniClient:
         qty_key: str = "qty",
         offset_key: str = "offset",
         page_size: int = 50,
+        max_pages: int = 2000,
     ) -> list[Any]:
         out: list[Any] = []
         offset = 0
+        pages = 0
         while True:
+            pages += 1
+            if pages > max_pages:
+                raise MoloniAPIError(
+                    f"Moloni {path}: pagination exceeded {max_pages} pages (possible duplicate pages from API).",
+                    body={"offset": offset, "collected": len(out)},
+                )
             payload = {**body, qty_key: page_size, offset_key: offset}
             chunk = await self.post(path, payload)
             if not isinstance(chunk, list):

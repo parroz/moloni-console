@@ -103,13 +103,10 @@ async def get_supplier_invoice_detail(
             "products/getOne",
             {"company_id": settings.moloni_company_id, "product_id": pid},
         )
-    raw_cats = await fetch_all_categories_parallel(moloni, settings.moloni_company_id)
-    categories = normalize_category_list(raw_cats if isinstance(raw_cats, list) else [])
     return {
         "document": doc,
         "products": products,
         "retail_vat_percent": float(settings.moloni_default_retail_vat_percent),
-        "categories": categories,
     }
 
 
