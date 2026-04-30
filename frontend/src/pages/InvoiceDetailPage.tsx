@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiJson } from "../api";
 import {
@@ -51,6 +51,25 @@ type Doc = {
 
 type Detail = { document: Doc; products: Record<string, ProductOne | null>; retail_vat_percent?: number };
 
+type CatRow = { category_id: number; parent_id: number; name: string };
+
+function initialCategoryParentChild(cid: number, cats: CatRow[]): { parentId: number; leafId: number } {
+  if (!cid || !cats.length) return { parentId: 0, leafId: 0 };
+  const byId = new Map(cats.map((c) => [c.category_id, c]));
+  const node = byId.get(cid);
+  if (!node) return { parentId: 0, leafId: cid };
+  if (node.parent_id === 0) return { parentId: cid, leafId: cid };
+  const parent = byId.get(node.parent_id);
+  if (parent && parent.parent_id === 0) return { parentId: parent.category_id, leafId: cid };
+  let cur = node;
+  while (cur.parent_id !== 0) {
+    const p = byId.get(cur.parent_id);
+    if (!p) return { parentId: 0, leafId: cid };
+    cur = p;
+  }
+  return { parentId: cur.category_id, leafId: cid };
+}
+
 type RowState = {
   productId: number;
   reference: string;
@@ -63,6 +82,9 @@ type RowState = {
   retailPvp: number;
   productVatPercent: number;
   ean: string;
+  /** Moloni root category (parent_id === 0) for the first dropdown. */
+  categoryParentId: number;
+  /** Moloni category_id to save (subcategory or root). */
   categoryId: number;
 };
 
@@ -79,8 +101,7 @@ export default function InvoiceDetailPage() {
 
   const catQ = useQuery({
     queryKey: ["categories", "recursive"],
-    queryFn: () =>
-      apiJson<{ category_id: number; parent_id: number; name: string }[]>("/moloni/categories?recursive=1"),
+    queryFn: () => apiJson<CatRow[]>("/moloni/categories?recursive=true"),
   });
 
   const [rows, setRows] = useState<RowState[]>([]);
@@ -97,6 +118,7 @@ export default function InvoiceDetailPage() {
 
   useEffect(() => {
     const d = detailQ.data;
+    const cats = catQ.data ?? [];
     if (!d?.document) return;
     const doc = d.document;
     setHeader({
@@ -128,12 +150,15 @@ export default function InvoiceDetailPage() {
           retailPvp: 0,
           productVatPercent: retailRate,
           ean: "",
+          categoryParentId: 0,
           categoryId: 0,
         });
         continue;
       }
       const rate = retailRate;
       const pv = Number(p.price ?? 0);
+      const leafCat = Number(p.category_id ?? 0);
+      const { parentId, leafId } = initialCategoryParentChild(leafCat, cats);
       next.push({
         productId: pid,
         reference: String(line.reference ?? p.reference ?? ""),
@@ -146,11 +171,12 @@ export default function InvoiceDetailPage() {
         retailPvp: pvpFromPv(pv, rate),
         productVatPercent: rate,
         ean: String(p.ean ?? ""),
-        categoryId: Number(p.category_id ?? 0),
+        categoryParentId: parentId,
+        categoryId: leafId,
       });
     }
     setRows(next);
-  }, [detailQ.data]);
+  }, [detailQ.data, catQ.data]);
 
   const bulkMut = useMutation({
     mutationFn: (items: { product_id: number; ean?: string; pvp?: number; category_id?: number; name?: string }[]) =>
@@ -218,13 +244,20 @@ export default function InvoiceDetailPage() {
   }, [rows]);
 
   const categories = catQ.data ?? [];
-  const catOptions = useMemo(
-    () =>
-      [...categories]
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((c) => ({ id: c.category_id, label: `${c.name} (#${c.category_id})` })),
+  const rootCategories = useMemo(
+    () => [...categories].filter((c) => c.parent_id === 0).sort((a, b) => a.name.localeCompare(b.name)),
     [categories],
   );
+  const childrenOf = useMemo(() => {
+    const byParent = new Map<number, CatRow[]>();
+    for (const c of categories) {
+      const k = c.parent_id;
+      if (!byParent.has(k)) byParent.set(k, []);
+      byParent.get(k)!.push(c);
+    }
+    for (const arr of byParent.values()) arr.sort((a, b) => a.name.localeCompare(b.name));
+    return (parentId: number) => byParent.get(parentId) ?? [];
+  }, [categories]);
 
   function updateRow(i: number, patch: Partial<RowState>) {
     setRows((prev) => {
@@ -232,6 +265,15 @@ export default function InvoiceDetailPage() {
       const base = copy[i];
       const cur = { ...base, ...patch };
       const rate = cur.productVatPercent;
+      if (patch.categoryParentId != null) {
+        const pid = Number(patch.categoryParentId);
+        cur.categoryParentId = pid;
+        const kids = childrenOf(pid);
+        cur.categoryId = kids.length ? kids[0].category_id : pid;
+      }
+      if (patch.categoryId != null) {
+        cur.categoryId = Number(patch.categoryId);
+      }
       if (patch.retailPvp != null) {
         const raw = Number(patch.retailPvp);
         const pvp = Number.isFinite(raw) ? Math.round(raw * 100) / 100 : 0;
@@ -274,13 +316,22 @@ export default function InvoiceDetailPage() {
       setErr(`PVP inválido (número) nas linhas: ${bad.map((r) => r.reference || r.productId).join(", ")}`);
       return;
     }
-    const items = rows.map((r) => ({
-      product_id: r.productId,
-      ean: r.ean,
-      pvp: Math.round(r.retailPvp * 100) / 100,
-      category_id: r.categoryId,
-      name: r.lineName,
-    }));
+    const items = rows.map((r) => {
+      const item: {
+        product_id: number;
+        ean: string;
+        pvp: number;
+        name: string;
+        category_id?: number;
+      } = {
+        product_id: r.productId,
+        ean: r.ean,
+        pvp: Math.round(r.retailPvp * 100) / 100,
+        name: r.lineName,
+      };
+      if (r.categoryId > 0) item.category_id = r.categoryId;
+      return item;
+    });
     bulkMut.mutate(items);
   }
 
@@ -392,14 +443,14 @@ export default function InvoiceDetailPage() {
               Linhas
             </h2>
             <p className="muted no-print" style={{ margin: "0.25rem 0 0.75rem", maxWidth: "52rem" }}>
-              Retalho: edite só o <strong>PVP</strong> (€ com IVA, 2 decimais). O <strong>PV</strong> sem IVA é{" "}
-              <code>PVP / (1 + IVA/100)</code> (4 decimais) e é o preço líquido gravado no Moloni. «IVA linha» é o IVA da
-              fatura de compra. «IVA venda» é a taxa legal usada neste cálculo (servidor:{" "}
-              <code>MOLONI_DEFAULT_RETAIL_VAT_PERCENT</code>
-              ); no Moloni o campo de IVA do artigo pode ser um <strong>valor absoluto em €</strong>, não a percentagem.
+              Retalho: edite só o <strong>PVP</strong> (€ com IVA, 2 decimais). O preço líquido no Moloni segue{" "}
+              <code>PVP / (1 + IVA/100)</code>. «IVA linha» é o IVA da fatura de compra; «IVA venda» é a taxa configurada
+              no servidor. Cada linha tem duas linhas na grelha: ref. ampla + dados; abaixo EAN ampla.
             </p>
+            {catQ.isLoading ? <p className="muted no-print">A carregar categorias Moloni…</p> : null}
+            {catQ.error ? <p className="error no-print">{(catQ.error as Error).message}</p> : null}
             <div style={{ overflow: "auto" }}>
-              <table className="data">
+              <table className="data invoice-lines-table">
                 <thead>
                   <tr>
                     <th>Ref.</th>
@@ -409,69 +460,106 @@ export default function InvoiceDetailPage() {
                     <th>Custo total</th>
                     <th>IVA linha %</th>
                     <th>IVA venda %</th>
-                    <th>PV (s/ IVA)</th>
                     <th>PVP (c/ IVA)</th>
-                    <th>EAN</th>
                     <th>Categoria</th>
+                    <th>Subcategoria</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={r.productId}>
-                      <td>{r.reference}</td>
-                      <td>
-                        <input value={r.lineName} onChange={(e) => updateRow(i, { lineName: e.target.value })} />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          value={r.qty}
-                          onChange={(e) => updateRow(i, { qty: Number(e.target.value) })}
-                        />
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          step="0.0001"
-                          value={r.lineUnitPrice}
-                          onChange={(e) => updateRow(i, { lineUnitPrice: Number(e.target.value) })}
-                        />
-                      </td>
-                      <td>{(r.qty * r.lineUnitPrice).toFixed(2)}</td>
-                      <td>{r.lineVatPercent}%</td>
-                      <td>{r.productVatPercent}%</td>
-                      <td className="retail-pv-readonly">
-                        {Number.isFinite(r.retailPv)
-                          ? r.retailPv.toLocaleString("pt-PT", {
-                              minimumFractionDigits: 4,
-                              maximumFractionDigits: 4,
-                            })
-                          : "—"}
-                      </td>
-                      <td>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min={0}
-                          value={r.retailPvp}
-                          onChange={(e) => updateRow(i, { retailPvp: Number(e.target.value) })}
-                        />
-                      </td>
-                      <td>
-                        <input value={r.ean} onChange={(e) => updateRow(i, { ean: e.target.value })} />
-                      </td>
-                      <td>
-                        <select value={r.categoryId} onChange={(e) => updateRow(i, { categoryId: Number(e.target.value) })}>
-                          <option value={0}>—</option>
-                          {catOptions.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.label}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
+                  {rows.map((r, i) => {
+                    let subOpts = childrenOf(r.categoryParentId);
+                    if (subOpts.length === 0 && r.categoryParentId > 0) {
+                      const root = rootCategories.find((c) => c.category_id === r.categoryParentId);
+                      if (root) subOpts = [root];
+                    }
+                    const leafOk = subOpts.some((k) => k.category_id === r.categoryId);
+                    const leafExtra = !leafOk ? categories.find((c) => c.category_id === r.categoryId) : undefined;
+                    if (leafExtra) subOpts = [...subOpts, leafExtra];
+                    return (
+                      <Fragment key={r.productId}>
+                        <tr className="invoice-line-r1">
+                          <td rowSpan={2} className="invoice-td-ref">
+                            <input
+                              className="invoice-input-ref"
+                              value={r.reference}
+                              onChange={(e) => updateRow(i, { reference: e.target.value })}
+                            />
+                          </td>
+                          <td>
+                            <input value={r.lineName} onChange={(e) => updateRow(i, { lineName: e.target.value })} />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              value={r.qty}
+                              onChange={(e) => updateRow(i, { qty: Number(e.target.value) })}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={r.lineUnitPrice}
+                              onChange={(e) => updateRow(i, { lineUnitPrice: Number(e.target.value) })}
+                            />
+                          </td>
+                          <td>{(r.qty * r.lineUnitPrice).toFixed(2)}</td>
+                          <td>{r.lineVatPercent}%</td>
+                          <td>{r.productVatPercent}%</td>
+                          <td>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min={0}
+                              value={r.retailPvp}
+                              onChange={(e) => updateRow(i, { retailPvp: Number(e.target.value) })}
+                            />
+                          </td>
+                          <td>
+                            <select
+                              value={r.categoryParentId}
+                              onChange={(e) => updateRow(i, { categoryParentId: Number(e.target.value) })}
+                            >
+                              <option value={0}>—</option>
+                              {rootCategories.map((c) => (
+                                <option key={c.category_id} value={c.category_id}>
+                                  {c.name} (#{c.category_id})
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td>
+                            <select
+                              value={r.categoryId}
+                              onChange={(e) => updateRow(i, { categoryId: Number(e.target.value) })}
+                            >
+                              <option value={0}>—</option>
+                              {subOpts.map((c) => (
+                                <option key={c.category_id} value={c.category_id}>
+                                  {c.name} (#{c.category_id})
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                        <tr className="invoice-line-r2">
+                          <td colSpan={6} className="invoice-td-ean">
+                            <label className="invoice-ean-label">
+                              <span className="muted">EAN</span>
+                              <input
+                                className="invoice-input-ean"
+                                value={r.ean}
+                                maxLength={20}
+                                onChange={(e) => updateRow(i, { ean: e.target.value })}
+                                placeholder="13–20 caracteres"
+                              />
+                            </label>
+                          </td>
+                          <td colSpan={3} className="invoice-td-r2-spacer muted no-print" />
+                        </tr>
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

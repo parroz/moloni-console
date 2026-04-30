@@ -211,6 +211,40 @@ td.retail-pv-readonly {
   white-space: nowrap;
 }
 
+table.invoice-lines-table .invoice-td-ref {
+  vertical-align: top;
+  min-width: 11rem;
+  max-width: 18rem;
+  width: 13rem;
+}
+
+table.invoice-lines-table .invoice-input-ref {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.8125rem;
+}
+
+table.invoice-lines-table tr.invoice-line-r2 td {
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 0.65rem;
+}
+
+table.invoice-lines-table .invoice-ean-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+table.invoice-lines-table .invoice-input-ean {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.875rem;
+  letter-spacing: 0.03em;
+  max-width: 28rem;
+}
+
+table.invoice-lines-table .invoice-td-r2-spacer {
+  border-bottom: 2px solid var(--border);
+}
+
 .invoice-totals-block {
   margin-top: 1.25rem;
   padding-top: 1rem;
