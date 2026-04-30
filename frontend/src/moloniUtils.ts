@@ -27,10 +27,12 @@ export function vatRatePercentFromProduct(product: { taxes?: MoloniTaxRow[] } | 
   return 0;
 }
 
-/** IVA para retalho (PVP/PV): taxa do artigo no Moloni, ou 23% se a API não expuser saft_type 1. */
+/** IVA para retalho (PVP/PV): taxa do artigo no Moloni, ou 23% se a API falhar ou devolver lixo (>23%). */
 export function effectiveRetailVatPercentFromProduct(product: { taxes?: MoloniTaxRow[] } | null | undefined): number {
   const r = vatRatePercentFromProduct(product);
-  return r > 0 ? r : DEFAULT_RETAIL_VAT_PERCENT;
+  if (r <= 0) return DEFAULT_RETAIL_VAT_PERCENT;
+  if (r > 23.01) return DEFAULT_RETAIL_VAT_PERCENT;
+  return r;
 }
 
 /** PVP (com IVA) para ecrã: 2 casas decimais. */

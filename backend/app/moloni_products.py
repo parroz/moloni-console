@@ -124,8 +124,16 @@ def primary_tax_rate_percent(full: dict[str, Any]) -> float:
 
 
 def effective_retail_vat_percent(full: dict[str, Any], *, fallback_percent: float) -> float:
-    """IVA % for PVP ↔ net price; Moloni often omits saft_type on product taxes — use fallback (default 23)."""
+    """IVA % for PVP ↔ net price.
+
+    - If Moloni omits IVA (0%), use fallback (e.g. 23).
+    - If Moloni returns a nonsense rate above PT normal VAT (23%), the API often put a
+      non-percent field in ``value`` — treat as missing and use fallback so PVP/1.23 works.
+    """
     r = primary_tax_rate_percent(full)
-    if r > 0:
-        return r
-    return float(fallback_percent) if fallback_percent > 0 else 0.0
+    if r <= 0:
+        return float(fallback_percent) if fallback_percent > 0 else 0.0
+    # PT IVA normal máximo 23%; valores como ~28% vêm de campos errados na resposta.
+    if r > 23.01:
+        return float(fallback_percent) if fallback_percent > 0 else r
+    return r
