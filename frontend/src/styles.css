@@ -204,6 +204,13 @@ table.data select {
   border-left: 1px solid var(--border);
 }
 
+td.retail-pv-readonly {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .invoice-totals-block {
   margin-top: 1.25rem;
   padding-top: 1rem;

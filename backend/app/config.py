@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     moloni_username: str
     moloni_password: str
     moloni_company_id: int
+    moloni_default_retail_vat_percent: float = Field(
+        23.0,
+        validation_alias=AliasChoices("MOLONI_DEFAULT_RETAIL_VAT_PERCENT"),
+        description="IVA % para PVP→PV quando o artigo no Moloni não devolve taxa IVA normalizada (saft_type 1).",
+    )
 
     session_secret: str = "change-me-in-production-use-openssl-rand-hex-32"
     # True behind HTTPS (nginx TLS): browser only sends session cookie on secure connections.

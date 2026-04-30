@@ -121,3 +121,11 @@ def primary_tax_rate_percent(full: dict[str, Any]) -> float:
         tax = t.get("tax") or {}
         return float(t.get("value", tax.get("value", 0)) or 0)
     return 0.0
+
+
+def effective_retail_vat_percent(full: dict[str, Any], *, fallback_percent: float) -> float:
+    """IVA % for PVP ↔ net price; Moloni often omits saft_type on product taxes — use fallback (default 23)."""
+    r = primary_tax_rate_percent(full)
+    if r > 0:
+        return r
+    return float(fallback_percent) if fallback_percent > 0 else 0.0

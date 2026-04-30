@@ -12,7 +12,7 @@ from app.moloni_client import MoloniAPIError
 from app.moloni_invoices import build_supplier_invoice_update
 from app.moloni_products import (
     build_product_update_body,
-    primary_tax_rate_percent,
+    effective_retail_vat_percent,
     pv_from_pvp,
 )
 
@@ -378,7 +378,7 @@ async def update_product(
     patch = body.model_dump(exclude_none=True)
     pvp = patch.pop("pvp", None)
     if pvp is not None:
-        rate = primary_tax_rate_percent(full)
+        rate = effective_retail_vat_percent(full, fallback_percent=settings.moloni_default_retail_vat_percent)
         patch["price"] = pv_from_pvp(float(pvp), rate)
     payload = build_product_update_body(settings.moloni_company_id, full, patch)
     return await moloni.post("products/update", payload)
@@ -424,7 +424,7 @@ async def bulk_update_products(
                 patch["category_id"] = row.category_id
             # PVP (com IVA) wins over raw net price so accidental price:0 never skips the retail update.
             if row.pvp is not None:
-                rate = primary_tax_rate_percent(full)
+                rate = effective_retail_vat_percent(full, fallback_percent=settings.moloni_default_retail_vat_percent)
                 patch["price"] = pv_from_pvp(float(row.pvp), rate)
             elif row.price is not None:
                 patch["price"] = row.price

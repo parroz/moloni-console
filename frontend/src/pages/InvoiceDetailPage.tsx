@@ -5,8 +5,8 @@ import { apiJson } from "../api";
 import {
   pvFromPvp,
   pvpFromPv,
+  effectiveRetailVatPercentFromProduct,
   vatRateFromLineTaxes,
-  vatRatePercentFromProduct,
   type MoloniTaxRow,
 } from "../moloniUtils";
 
@@ -128,7 +128,7 @@ export default function InvoiceDetailPage() {
         });
         continue;
       }
-      const rate = vatRatePercentFromProduct(p);
+      const rate = effectiveRetailVatPercentFromProduct(p);
       const pv = Number(p.price ?? 0);
       next.push({
         productId: pid,
@@ -233,10 +233,6 @@ export default function InvoiceDetailPage() {
         const pvp = Number.isFinite(raw) ? Math.round(raw * 100) / 100 : 0;
         cur.retailPvp = pvp;
         cur.retailPv = pvFromPvp(pvp, rate);
-      } else if (patch.retailPv != null) {
-        const pv = Number(patch.retailPv);
-        cur.retailPv = pv;
-        cur.retailPvp = pvpFromPv(pv, rate);
       }
       copy[i] = cur;
       return copy;
@@ -391,6 +387,11 @@ export default function InvoiceDetailPage() {
             <h2 className="no-print" style={{ fontSize: "1.05rem" }}>
               Linhas
             </h2>
+            <p className="muted no-print" style={{ margin: "0.25rem 0 0.75rem", maxWidth: "52rem" }}>
+              Retalho: edite só o <strong>PVP</strong> (€ com IVA, 2 decimais). O <strong>PV</strong> sem IVA é calculado (4
+              decimais) e corresponde ao preço gravado no Moloni. «IVA linha» refere-se à fatura de compra; «IVA venda» é a
+              taxa usada no PVP (artigo no Moloni, ou 23% se a API não indicar IVA normalizado).
+            </p>
             <div style={{ overflow: "auto" }}>
               <table className="data">
                 <thead>
@@ -401,6 +402,7 @@ export default function InvoiceDetailPage() {
                     <th>Custo unit.</th>
                     <th>Custo total</th>
                     <th>IVA linha %</th>
+                    <th>IVA venda %</th>
                     <th>PV (s/ IVA)</th>
                     <th>PVP (c/ IVA)</th>
                     <th>EAN</th>
@@ -431,13 +433,14 @@ export default function InvoiceDetailPage() {
                       </td>
                       <td>{(r.qty * r.lineUnitPrice).toFixed(2)}</td>
                       <td>{r.lineVatPercent}%</td>
-                      <td>
-                        <input
-                          type="number"
-                          step="0.0001"
-                          value={r.retailPv}
-                          onChange={(e) => updateRow(i, { retailPv: Number(e.target.value) })}
-                        />
+                      <td>{r.productVatPercent}%</td>
+                      <td className="retail-pv-readonly">
+                        {Number.isFinite(r.retailPv)
+                          ? r.retailPv.toLocaleString("pt-PT", {
+                              minimumFractionDigits: 4,
+                              maximumFractionDigits: 4,
+                            })
+                          : "—"}
                       </td>
                       <td>
                         <input
@@ -498,7 +501,7 @@ export default function InvoiceDetailPage() {
                 <tbody>
                   <tr>
                     <th scope="row">Total PV (s/ IVA)</th>
-                    <td>{retailTotals.pv.toFixed(2)} €</td>
+                    <td>{retailTotals.pv.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 4 })} €</td>
                   </tr>
                   <tr className="invoice-totals-strong">
                     <th scope="row">Total PVP (c/ IVA)</th>

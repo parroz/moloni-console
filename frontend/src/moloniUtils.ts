@@ -1,5 +1,8 @@
 /** Moloni product tax helpers (IVA saft_type === 1). */
 
+/** Alinhado ao default do backend quando o produto não tem IVA normalizado na API. */
+export const DEFAULT_RETAIL_VAT_PERCENT = 23;
+
 export type MoloniTaxRow = {
   tax_id?: number;
   value?: number;
@@ -22,6 +25,12 @@ export function vatRatePercentFromProduct(product: { taxes?: MoloniTaxRow[] } | 
     return Number(v ?? 0);
   }
   return 0;
+}
+
+/** IVA para retalho (PVP/PV): taxa do artigo no Moloni, ou 23% se a API não expuser saft_type 1. */
+export function effectiveRetailVatPercentFromProduct(product: { taxes?: MoloniTaxRow[] } | null | undefined): number {
+  const r = vatRatePercentFromProduct(product);
+  return r > 0 ? r : DEFAULT_RETAIL_VAT_PERCENT;
 }
 
 /** PVP (com IVA) para ecrã: 2 casas decimais. */

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { apiJson } from "../api";
-import { pvpFromPv, vatRatePercentFromProduct } from "../moloniUtils";
+import { effectiveRetailVatPercentFromProduct, pvpFromPv } from "../moloniUtils";
 
 type Cat = { category_id: number; parent_id: number; name: string };
 type Prod = {
@@ -88,7 +88,7 @@ export default function ProductsPage() {
             </thead>
             <tbody>
               {accum.map((p) => {
-                const rate = vatRatePercentFromProduct(p);
+                const rate = effectiveRetailVatPercentFromProduct(p);
                 const pv = Number(p.price ?? 0);
                 const pvp = pvpFromPv(pv, rate);
                 return (
