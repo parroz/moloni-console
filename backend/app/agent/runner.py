@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import time
 from typing import Any, AsyncIterator
 
 import anthropic
@@ -19,6 +21,8 @@ import anthropic
 from app.agent.prompts import build_system_blocks
 from app.agent.state import AgentSession
 from app.config import Settings
+
+log = logging.getLogger("agent.runner")
 
 
 def _pdf_block(pdf_bytes: bytes) -> dict[str, Any]:
@@ -80,10 +84,25 @@ async def run_turn(
     session.messages.append(user_msg)
     yield {"type": "user_message_persisted"}
 
+    log.info(
+        "agent run start: session=%s supplier=%s test_mode=%s attach_pdf=%s pdf_size=%d turn=%d",
+        session.session_id,
+        session.supplier_slug,
+        session.test_mode,
+        attach_pdf,
+        len(session.pdf_bytes) if session.pdf_bytes else 0,
+        len(session.messages),
+    )
+
     system_blocks = build_system_blocks(session.supplier_slug, session.test_mode)
     mcp_servers = _mcp_servers(settings)
 
+    if not mcp_servers:
+        log.warning("agent run: MOLONI_MCP_URL not set — model will run without Moloni tools")
+
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    t0 = time.monotonic()
+    first_event_at: float | None = None
 
     # Track tool_use blocks so we can emit a clean `tool_use` event with full input
     # once the corresponding content_block_stop arrives. The stream gives us partial
@@ -95,6 +114,8 @@ async def run_turn(
     try:
         # MCP-as-tools is exposed under `client.beta.messages.*` on the Python SDK.
         # We pass `betas=[...]` to enable the MCP client beta feature.
+        log.info("agent run: opening stream (model=%s, max_tokens=8192)", settings.anthropic_model)
+        yield {"type": "stream_started"}
         async with client.beta.messages.stream(
             model=settings.anthropic_model,
             max_tokens=8192,
@@ -105,6 +126,9 @@ async def run_turn(
         ) as stream:
             async for event in stream:
                 etype = getattr(event, "type", None)
+                if first_event_at is None:
+                    first_event_at = time.monotonic()
+                    log.info("agent run: first event after %.1fs (event_type=%s)", first_event_at - t0, etype)
 
                 if etype == "content_block_start":
                     block = getattr(event, "content_block", None)
@@ -139,6 +163,12 @@ async def run_turn(
                             parsed_input = json.loads(buf["input_json"]) if buf["input_json"] else {}
                         except json.JSONDecodeError:
                             parsed_input = {"_raw": buf["input_json"]}
+                        log.info(
+                            "agent run: tool_use name=%s server=%s id=%s",
+                            buf["name"],
+                            buf["server_name"],
+                            buf["id"],
+                        )
                         yield {
                             "type": "tool_use",
                             "id": buf["id"],
@@ -159,11 +189,17 @@ async def run_turn(
             for block in final_message_content:
                 btype = getattr(block, "type", None)
                 if btype == "mcp_tool_result":
+                    is_error = bool(getattr(block, "is_error", False))
+                    log.info(
+                        "agent run: tool_result tool_use_id=%s error=%s",
+                        getattr(block, "tool_use_id", ""),
+                        is_error,
+                    )
                     yield {
                         "type": "tool_result",
                         "tool_use_id": getattr(block, "tool_use_id", ""),
                         "content": _serialise_result_content(getattr(block, "content", [])),
-                        "is_error": bool(getattr(block, "is_error", False)),
+                        "is_error": is_error,
                     }
 
             # Persist assistant message in conversation history (Anthropic expects content
@@ -173,16 +209,27 @@ async def run_turn(
             )
 
             usage = getattr(final, "usage", None)
+            usage_payload = _serialise_usage(usage)
+            elapsed = time.monotonic() - t0
+            log.info(
+                "agent run complete: elapsed=%.1fs stop_reason=%s usage=%s",
+                elapsed,
+                getattr(final, "stop_reason", None),
+                usage_payload,
+            )
             yield {
                 "type": "message_complete",
                 "stop_reason": getattr(final, "stop_reason", None),
-                "usage": _serialise_usage(usage),
+                "usage": usage_payload,
             }
     except anthropic.APIStatusError as e:
+        log.exception("agent run: Anthropic API error")
         yield {"type": "error", "message": f"Anthropic API error ({e.status_code}): {e.message}"}
     except anthropic.APIError as e:
+        log.exception("agent run: Anthropic SDK error")
         yield {"type": "error", "message": f"Anthropic error: {str(e)}"}
     except Exception as e:  # noqa: BLE001 — surface anything else to the UI
+        log.exception("agent run: unexpected error")
         yield {"type": "error", "message": f"Internal error: {type(e).__name__}: {e}"}
 
 

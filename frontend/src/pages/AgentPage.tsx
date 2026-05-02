@@ -96,6 +96,17 @@ export default function AgentPage() {
     cache_read?: number;
     cache_create?: number;
   } | null>(null);
+  // High-level "what's the agent doing right now?" so the user sees progress
+  // even during the long pre-stream latency (PDF + MCP discovery on Anthropic side).
+  const [phase, setPhase] = useState<
+    | "idle"
+    | "uploading"
+    | "sending"
+    | "waiting"
+    | "streaming"
+    | "tool"
+  >("idle");
+  const [phaseDetail, setPhaseDetail] = useState<string>("");
 
   // Suppliers dropdown
   const suppliersQ = useQuery({
@@ -156,6 +167,8 @@ export default function AgentPage() {
   // PDF upload
   const uploadMut = useMutation({
     mutationFn: async (file: File) => {
+      setPhase("uploading");
+      setPhaseDetail(file.name);
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch(`/api/agent/sessions/${sessionId}/upload`, {
@@ -171,85 +184,127 @@ export default function AgentPage() {
       setLiveAssistant("");
       setLiveTools([]);
       setError(null);
+      setPhase("idle");
+      setPhaseDetail("");
     },
-    onError: (e: Error) => setError(e.message),
+    onError: (e: Error) => {
+      setError(e.message);
+      setPhase("idle");
+      setPhaseDetail("");
+    },
   });
 
   const { send, streaming } = useAgentStream(sessionId);
 
   const [draft, setDraft] = useState("");
+
+  const runMessage = useCallback(
+    async (text: string) => {
+      if (!text.trim() || !sessionId || streaming) return;
+      setError(null);
+      setLiveAssistant("");
+      setLiveTools([]);
+      setPhase("sending");
+      setPhaseDetail("");
+
+      try {
+        await send(text, (ev: AgentEvent) => {
+          switch (ev.type) {
+            case "user_message_persisted":
+              setPhase("waiting");
+              setPhaseDetail("a enviar para Claude e a anexar PDF…");
+              break;
+            case "stream_started":
+              setPhase("waiting");
+              setPhaseDetail("Claude a processar o PDF — pode demorar 10-30s");
+              break;
+            case "text_delta":
+              if (phase !== "streaming") {
+                setPhase("streaming");
+                setPhaseDetail("");
+              }
+              setLiveAssistant((prev) => prev + ev.text);
+              break;
+            case "tool_use":
+              setPhase("tool");
+              setPhaseDetail(`a chamar ${ev.name}…`);
+              setLiveTools((prev) => [
+                ...prev,
+                {
+                  kind: "tool",
+                  key: `live-${ev.id}`,
+                  id: ev.id,
+                  name: ev.name,
+                  server: ev.server_name,
+                  input: ev.input,
+                },
+              ]);
+              break;
+            case "tool_result":
+              setLiveTools((prev) =>
+                prev.map((t) =>
+                  t.id === ev.tool_use_id
+                    ? {
+                        ...t,
+                        result: {
+                          isError: ev.is_error,
+                          text:
+                            (ev.content || [])
+                              .map((c) => (c.type === "text" ? c.text || "" : ""))
+                              .join("\n")
+                              .trim() || "(sem conteúdo)",
+                        },
+                      }
+                    : t,
+                ),
+              );
+              setPhase("waiting");
+              setPhaseDetail("a continuar análise…");
+              break;
+            case "message_complete":
+              setLastUsage({
+                input: ev.usage.input_tokens,
+                output: ev.usage.output_tokens,
+                cache_read: ev.usage.cache_read_input_tokens,
+                cache_create: ev.usage.cache_creation_input_tokens,
+              });
+              break;
+            case "error":
+              setError(ev.message);
+              setPhase("idle");
+              setPhaseDetail("");
+              break;
+            case "done":
+              // refetch the session so its persisted history replaces our live buffer
+              qc.invalidateQueries({ queryKey: ["agent", "session", sessionId] });
+              setLiveAssistant("");
+              setLiveTools([]);
+              setPhase("idle");
+              setPhaseDetail("");
+              break;
+          }
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPhase("idle");
+        setPhaseDetail("");
+      }
+    },
+    [sessionId, streaming, send, qc, phase],
+  );
+
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    if (!text || !sessionId || streaming) return;
+    if (!text) return;
     setDraft("");
-    setError(null);
-    setLiveAssistant("");
-    setLiveTools([]);
+    await runMessage(text);
+  }, [draft, runMessage]);
 
-    // Optimistically refetch to add the user message to the UI right away
-    // (the runner persists it before streaming completes; we'll refetch at end)
-
-    try {
-      await send(text, (ev: AgentEvent) => {
-        switch (ev.type) {
-          case "text_delta":
-            setLiveAssistant((prev) => prev + ev.text);
-            break;
-          case "tool_use":
-            setLiveTools((prev) => [
-              ...prev,
-              {
-                kind: "tool",
-                key: `live-${ev.id}`,
-                id: ev.id,
-                name: ev.name,
-                server: ev.server_name,
-                input: ev.input,
-              },
-            ]);
-            break;
-          case "tool_result":
-            setLiveTools((prev) =>
-              prev.map((t) =>
-                t.id === ev.tool_use_id
-                  ? {
-                      ...t,
-                      result: {
-                        isError: ev.is_error,
-                        text:
-                          (ev.content || [])
-                            .map((c) => (c.type === "text" ? c.text || "" : ""))
-                            .join("\n")
-                            .trim() || "(sem conteúdo)",
-                      },
-                    }
-                  : t,
-              ),
-            );
-            break;
-          case "message_complete":
-            setLastUsage({
-              input: ev.usage.input_tokens,
-              output: ev.usage.output_tokens,
-              cache_read: ev.usage.cache_read_input_tokens,
-              cache_create: ev.usage.cache_creation_input_tokens,
-            });
-            break;
-          case "error":
-            setError(ev.message);
-            break;
-          case "done":
-            // refetch the session so its persisted history replaces our live buffer
-            qc.invalidateQueries({ queryKey: ["agent", "session", sessionId] });
-            setLiveAssistant("");
-            setLiveTools([]);
-            break;
-        }
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [draft, sessionId, streaming, send, qc]);
+  const handleProcess = useCallback(async () => {
+    await runMessage(
+      "Processa esta fatura. Extrai todos os dados (cabeçalho, totais, IVAs, linhas), expande variantes por cor e tamanho, gera as referências, verifica os produtos no Moloni e prepara a fatura de fornecedor segundo as regras do fornecedor.",
+    );
+  }, [runMessage]);
 
   // ── Render ──
 
@@ -338,12 +393,22 @@ export default function AgentPage() {
 
       <div className="card">
         <h2 style={{ fontSize: "1.05rem" }}>Conversa</h2>
-        {transcript.length === 0 && !liveAssistant && liveTools.length === 0 ? (
-          <p className="muted">
-            Carrega um PDF e escreve uma instrução, por exemplo:{" "}
-            <em>"Processa esta fatura."</em>
-          </p>
+
+        <PhaseBanner phase={phase} detail={phaseDetail} />
+
+        {transcript.length === 0 &&
+        !liveAssistant &&
+        liveTools.length === 0 &&
+        phase === "idle" ? (
+          session.has_pdf ? (
+            <p className="muted">
+              PDF carregado. Carrega <strong>Processar fatura</strong> em baixo, ou escreve uma instrução personalizada.
+            </p>
+          ) : (
+            <p className="muted">Carrega um PDF para começar.</p>
+          )
         ) : null}
+
         <div className="agent-thread">
           {transcript.map((it) => (
             <ChatItemView key={it.key} item={it} />
@@ -360,6 +425,23 @@ export default function AgentPage() {
         </div>
 
         {error ? <p className="error">{error}</p> : null}
+
+        {/* Primary action: one-click "Processar fatura" — only shown while there
+            are no messages yet, so the chat textarea takes over after the first turn. */}
+        {transcript.length === 0 && session.has_pdf ? (
+          <div style={{ marginTop: "0.75rem" }}>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={handleProcess}
+              disabled={streaming}
+              style={{ fontSize: "0.95rem", padding: "0.6rem 1.1rem" }}
+            >
+              {streaming ? <Spinner /> : null}
+              {streaming ? " A processar…" : "▶ Processar fatura"}
+            </button>
+          </div>
+        ) : null}
 
         <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
           <textarea
@@ -382,7 +464,7 @@ export default function AgentPage() {
           />
           <button
             type="button"
-            className="btn primary"
+            className="btn"
             onClick={handleSend}
             disabled={streaming || !draft.trim() || !session.has_pdf}
             style={{ alignSelf: "flex-start" }}
@@ -400,6 +482,37 @@ export default function AgentPage() {
       </div>
     </div>
   );
+}
+
+function PhaseBanner({
+  phase,
+  detail,
+}: {
+  phase: "idle" | "uploading" | "sending" | "waiting" | "streaming" | "tool";
+  detail: string;
+}) {
+  if (phase === "idle") return null;
+  const label =
+    phase === "uploading"
+      ? "A carregar PDF…"
+      : phase === "sending"
+        ? "A enviar…"
+        : phase === "tool"
+          ? "Tool em execução"
+          : phase === "streaming"
+            ? "A escrever resposta…"
+            : "A processar…";
+  return (
+    <div className="agent-phase">
+      <Spinner />
+      <span className="agent-phase-label">{label}</span>
+      {detail ? <span className="agent-phase-detail muted">{detail}</span> : null}
+    </div>
+  );
+}
+
+function Spinner() {
+  return <span className="agent-spinner" aria-hidden="true" />;
 }
 
 // ── Subcomponents ──
