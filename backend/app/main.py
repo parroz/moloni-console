@@ -14,7 +14,15 @@ from app.config import get_settings
 from app.moloni_client import MoloniAPIError, MoloniClient
 from app.routes import router
 
-# Surface agent.* logs at INFO so `docker compose logs api` shows progress.
+# uvicorn configures its own loggers (uvicorn, uvicorn.access, …) but does NOT
+# attach a handler to the root logger, so logs from our own modules ("agent.runner")
+# get dropped silently. force=True replaces any pre-existing config and makes
+# logging.info() from our code print to stderr (Docker captures stderr).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    force=True,
+)
 logging.getLogger("agent").setLevel(logging.INFO)
 logging.getLogger("agent.runner").setLevel(logging.INFO)
 

@@ -27,6 +27,22 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 120s;
     }
+
+    # Agent SSE stream — separate location with no buffering and a long timeout.
+    # The agent can sit quiet for ~30s while Claude processes the PDF, then run
+    # for several minutes through tool calls. 120s timeout would kill the stream.
+    location /api/agent/ {
+        proxy_pass http://moloni_console_web;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
 }
 
 # Optional HTTP → HTTPS
