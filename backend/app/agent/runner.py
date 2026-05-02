@@ -93,7 +93,9 @@ async def run_turn(
     final_message_content: list[Any] = []
 
     try:
-        async with client.messages.stream(
+        # MCP-as-tools is exposed under `client.beta.messages.*` on the Python SDK.
+        # We pass `betas=[...]` to enable the MCP client beta feature.
+        async with client.beta.messages.stream(
             model=settings.anthropic_model,
             max_tokens=8192,
             system=system_blocks,
