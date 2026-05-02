@@ -141,6 +141,23 @@ async def run_turn(
                             "server_name": getattr(block, "server_name", ""),
                             "input_json": "",
                         }
+                    elif block_type == "mcp_tool_result":
+                        # MCP results arrive whole (not streamed token by token), so we
+                        # have everything we need on the start event — emit it live so
+                        # the UI updates as each MCP call returns.
+                        is_error = bool(getattr(block, "is_error", False))
+                        tool_use_id = getattr(block, "tool_use_id", "")
+                        log.info(
+                            "agent run: tool_result tool_use_id=%s error=%s",
+                            tool_use_id,
+                            is_error,
+                        )
+                        yield {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": _serialise_result_content(getattr(block, "content", [])),
+                            "is_error": is_error,
+                        }
 
                 elif etype == "content_block_delta":
                     delta = getattr(event, "delta", None)
@@ -184,23 +201,7 @@ async def run_turn(
 
             final = await stream.get_final_message()
             final_message_content = final.content
-
-            # Walk the final content and emit any tool_result blocks we missed
-            for block in final_message_content:
-                btype = getattr(block, "type", None)
-                if btype == "mcp_tool_result":
-                    is_error = bool(getattr(block, "is_error", False))
-                    log.info(
-                        "agent run: tool_result tool_use_id=%s error=%s",
-                        getattr(block, "tool_use_id", ""),
-                        is_error,
-                    )
-                    yield {
-                        "type": "tool_result",
-                        "tool_use_id": getattr(block, "tool_use_id", ""),
-                        "content": _serialise_result_content(getattr(block, "content", [])),
-                        "is_error": is_error,
-                    }
+            # tool_result events were already emitted live during streaming above.
 
             # Persist assistant message in conversation history (Anthropic expects content
             # as the same JSON shape it returned).
