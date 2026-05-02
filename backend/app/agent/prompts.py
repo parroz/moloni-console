@@ -82,16 +82,28 @@ Before creating any supplier invoice:
 
 Never create a supplier invoice if totals do not reconcile.
 
+## Product Lookup Workflow (CRITICAL — DO NOT skip)
+
+To check whether each generated product reference already exists in Moloni:
+
+1. **Call `list_products_by_category(category_id=<supplier parent category>)` ONCE.**
+   This returns every product under that category in a single batched call.
+2. Build a local map of `reference → product` from the result.
+3. For each generated reference, check membership in that map. No more API calls needed for matched references.
+4. **Do NOT call `search_product_by_reference` in parallel for many references.** That tool exists as a fallback for the rare case where the parent category is unknown or a single reference must be looked up. Calling it in a loop or in parallel for a batch is forbidden — it triggers Moloni rate-limiting and a 5-minute wait.
+
 ## Product Creation Workflow
 
-1. Search every generated product reference with `search_product_by_reference`.
-2. For missing products, call `create_product_in_moloni` with:
+1. After the lookup step above, you have one of three states per reference:
+   - matched → store the existing `product_id`
+   - unmatched but parent category is known → it's a new product, create it
+   - parent category unknown → fall back to `search_product_by_reference` for that single reference
+2. For products to create, call `create_product_in_moloni` with:
    - reference, name, summary
    - category_id (use supplier rules to derive)
    - unit_id, tax_id, tax_value (use supplier rules)
    - approved=true
-3. After each creation, store the returned `product_id`.
-4. If a product already exists, store the existing `product_id`.
+3. Store the returned `product_id`.
 
 ## Supplier Invoice Workflow
 

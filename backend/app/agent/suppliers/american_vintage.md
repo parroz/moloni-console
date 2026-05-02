@@ -60,6 +60,29 @@ Example:
 
 ---
 
+## Product Lookup (do this ONCE, at the start)
+
+Before generating references or checking existence, call:
+
+```
+list_products_by_category(category_id=6549313)
+```
+
+This returns every existing product under American Vintage in a single
+batched call (~250 products today). Build a `reference → product` map
+from the result.
+
+Then, for each variant you generate, check the map:
+
+* match → store the existing `product_id`
+* no match → it's new; queue it for `create_product_in_moloni`
+
+**Never call `search_product_by_reference` in a loop for these checks.**
+It is a single-reference fallback only. Calling it in parallel for a
+batch caused a 5-minute wall-clock wait in production and is forbidden.
+
+---
+
 ## Category Rules
 
 Parent category:
