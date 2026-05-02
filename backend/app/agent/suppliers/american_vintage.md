@@ -134,20 +134,48 @@ Important:
 
 ---
 
+## Quantity Rule (CRITICAL)
+
+American Vintage invoices use a **size × colour matrix** under each article.
+A cell is filled (with a number) only when that variant is being shipped.
+Empty cells, blank cells, or cells with `0` mean **NOT ordered** — those
+variants do **not** exist on this invoice.
+
+Rules:
+
+* **Only create / reference / list product variants for cells with a quantity ≥ 1.**
+* **Skip every (color × size) combination whose cell is empty, blank, dash, or 0.**
+* Do not "fill in" missing sizes for completeness.
+* Do not create products for colours that have no quantities at all.
+* The total of the matrix cells must equal the line total quantity printed
+  on the right of the article header. If they don't match, flag it and stop.
+
+Examples (using the matrix structure in the PDF):
+
+| Article    | Colour    | S | M | L | line total |
+|------------|-----------|---|---|---|------------|
+| BOBY09AE26 | ECRU      |   |   |   | 0          |
+| BOBY09AE26 | TURQUOISE | 1 | 1 |   | 2          |
+
+→ Produces ONLY:
+1. `AMV-BOBY09AE26-TURQUOISE-S` qty 1
+2. `AMV-BOBY09AE26-TURQUOISE-M` qty 1
+
+→ Does NOT produce: ECRU-S, ECRU-M, ECRU-L, TURQUOISE-L (all empty cells).
+
+---
+
 ## Example Expansion
 
 Invoice line:
 
 * Article: BOBY03FE26
 * Description: SWEAT ZIPPE ML CAPUCHE
-* Color: TURQUOISE
-* Sizes:
-
-  * S: 1
-  * M: 1
+* Colour matrix:
+  * TURQUOISE — S: 1, M: 1, L: (empty)
 * Unit cost: 55.80
 
-Produces:
+Produces (only the cells with qty ≥ 1):
 
 1. AMV-BOBY03FE26-TURQUOISE-S
 

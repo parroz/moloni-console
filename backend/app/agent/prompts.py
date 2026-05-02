@@ -54,6 +54,15 @@ For each line item:
 - keep product variants distinct when the invoice suggests meaningful differences (size, unit, pack quantity, model)
 - do not merge different products just because the names look similar
 
+## Quantity Rule (CRITICAL)
+
+A product variant exists on this invoice only if its quantity is at least 1.
+
+- **Never create, reference, or list a product for a variant whose quantity is 0, empty, blank, or missing.**
+- This applies to every invoice layout: simple lines, size matrices, colour × size grids, multi-page tables.
+- Do not "fill in" missing variants for completeness, do not assume defaults.
+- The sum of all variant quantities for an article must equal the line total printed on the invoice. If they don't match, stop and flag the discrepancy — do not proceed with creation.
+
 ## Duplicate Prevention
 
 Before creating any product:
