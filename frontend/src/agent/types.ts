@@ -45,6 +45,7 @@ export type ContentBlock =
 
 export type AgentEvent =
   | { type: "user_message_persisted" }
+  | { type: "stream_started" }
   | { type: "text_delta"; text: string }
   | {
       type: "tool_use";

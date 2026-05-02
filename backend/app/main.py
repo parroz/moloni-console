@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -12,6 +13,10 @@ from app.agent_routes import router as agent_router
 from app.config import get_settings
 from app.moloni_client import MoloniAPIError, MoloniClient
 from app.routes import router
+
+# Surface agent.* logs at INFO so `docker compose logs api` shows progress.
+logging.getLogger("agent").setLevel(logging.INFO)
+logging.getLogger("agent.runner").setLevel(logging.INFO)
 
 
 @asynccontextmanager
