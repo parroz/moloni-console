@@ -106,6 +106,10 @@ table.data th {
   font-weight: 600;
 }
 
+table.data tbody tr:hover td {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
 table.data input,
 table.data select {
   width: 100%;
@@ -115,6 +119,13 @@ table.data select {
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
+}
+
+table.data input:focus,
+table.data select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
 }
 
 .btn {
@@ -136,6 +147,14 @@ table.data select {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
 }
 
 .btn:disabled {
@@ -180,6 +199,26 @@ table.data select {
   font-size: 0.85rem;
 }
 
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 99px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+}
+
+.badge-ok {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+}
+
+.badge-muted {
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
+}
+
 .cat-tree {
   font-size: 0.9rem;
 }
@@ -211,11 +250,135 @@ td.retail-pv-readonly {
   white-space: nowrap;
 }
 
+.pvp-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.pvp-cell .pv-hint {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* ── Invoice lines table column widths ── */
+table.invoice-lines-table .invoice-th-ref,
 table.invoice-lines-table .invoice-td-ref {
+  min-width: 13rem;
+  max-width: 22rem;
+  width: 16rem;
   vertical-align: top;
-  min-width: 11rem;
-  max-width: 18rem;
-  width: 13rem;
+}
+
+table.invoice-lines-table .invoice-th-qty,
+table.invoice-lines-table .invoice-td-qty {
+  width: 4.5rem;
+  min-width: 4rem;
+}
+
+table.invoice-lines-table .invoice-th-cost,
+table.invoice-lines-table .invoice-td-cost {
+  width: 7rem;
+  min-width: 6rem;
+}
+
+table.invoice-lines-table .invoice-th-total,
+table.invoice-lines-table .invoice-td-total {
+  width: 6rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+table.invoice-lines-table .invoice-th-vat,
+table.invoice-lines-table .invoice-td-vat {
+  width: 4.5rem;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+table.invoice-lines-table .invoice-th-pvp,
+table.invoice-lines-table .invoice-td-pvp {
+  width: 9rem;
+  min-width: 8rem;
+}
+
+table.invoice-lines-table .invoice-th-cat,
+table.invoice-lines-table .invoice-td-cat,
+table.invoice-lines-table .invoice-th-subcat,
+table.invoice-lines-table .invoice-td-subcat {
+  width: 8rem;
+  min-width: 7rem;
+  max-width: 9rem;
+}
+
+table.invoice-lines-table .invoice-td-cat select,
+table.invoice-lines-table .invoice-td-subcat select {
+  min-width: 0;
+}
+
+/* Each product = one <tbody class="product-block"> wrapping its 2 rows.
+   This lets us hover/zebra/border the whole product as a unit. */
+
+/* Row 1: top-aligned so the rowspan=2 Ref cell doesn't stretch neighbours.
+   Generous top padding (start of a product), tight bottom (sits flush against row 2). */
+table.invoice-lines-table tr.invoice-line-r1 td {
+  vertical-align: top;
+  padding-top: 0.7rem;
+  padding-bottom: 0.15rem;
+  border-bottom: none;
+}
+
+/* Row 2: name + EAN — tight top (flush against row 1), generous bottom (end of product). */
+table.invoice-lines-table tr.invoice-line-r2 td {
+  vertical-align: middle;
+  padding-top: 0.15rem;
+  padding-bottom: 0.7rem;
+  border-bottom: none;
+}
+
+/* Override the global .data row hover for invoice lines (we hover by product instead) */
+table.invoice-lines-table tbody tr:hover td {
+  background: transparent;
+}
+
+/* Zebra striping: every other product gets a subtle background */
+table.invoice-lines-table tbody.product-block:nth-of-type(even) td {
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+/* Hover highlights the whole product (both rows) */
+table.invoice-lines-table tbody.product-block:hover td {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* Strong separator between products — accent-tinted so it reads as a divider, not a faint line */
+table.invoice-lines-table tbody.product-block {
+  border-bottom: 2px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+table.invoice-lines-table tbody.product-block:last-of-type {
+  border-bottom: none;
+}
+
+table.invoice-lines-table .invoice-td-name {
+  padding-top: 0.25rem;
+}
+
+table.invoice-lines-table .invoice-input-name {
+  width: 100%;
+  font-size: 0.875rem;
 }
 
 table.invoice-lines-table .invoice-input-ref {
@@ -223,29 +386,11 @@ table.invoice-lines-table .invoice-input-ref {
   font-size: 0.8125rem;
 }
 
-table.invoice-lines-table tr.invoice-line-r2 td {
-  border-bottom: 2px solid var(--border);
-  padding-bottom: 0.65rem;
-}
-
 table.invoice-lines-table .invoice-input-ean {
   font-family: ui-monospace, Menlo, monospace;
   font-size: 0.875rem;
   letter-spacing: 0.03em;
   width: 100%;
-  min-width: 14rem;
-}
-
-table.invoice-lines-table .invoice-td-desc {
-  vertical-align: top;
-}
-
-table.invoice-lines-table .invoice-input-desc {
-  width: 100%;
-  min-height: 2.75rem;
-  resize: vertical;
-  font-size: 0.8125rem;
-  line-height: 1.35;
 }
 
 .invoice-totals-block {

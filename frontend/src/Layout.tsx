@@ -5,7 +5,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="layout">
       <header className="topnav no-print">
-        <strong>Moloni console</strong>
+        <NavLink to="/invoices" style={{ textDecoration: "none", color: "var(--text)" }}>
+          <strong>Moloni console</strong>
+        </NavLink>
         <NavLink to="/invoices" className={({ isActive }) => (isActive ? "active" : "")}>
           Faturas fornecedor
         </NavLink>
