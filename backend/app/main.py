@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.agent_routes import router as agent_router
 from app.config import get_settings
 from app.moloni_client import MoloniAPIError, MoloniClient
 from app.routes import router
@@ -47,6 +48,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+app.include_router(agent_router)
 
 
 @app.exception_handler(MoloniAPIError)

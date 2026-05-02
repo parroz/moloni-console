@@ -40,6 +40,12 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
+    # ── Agent (PDF → supplier invoice) ──
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-5"
+    moloni_mcp_url: str = ""
+    moloni_mcp_auth_token: str = ""
+
     @field_validator("moloni_password", mode="after")
     @classmethod
     def moloni_password_plain(cls, v: str) -> str:
