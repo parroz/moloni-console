@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -88,24 +89,56 @@ async def get_supplier_invoice_detail(
     document_id: int,
     settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
-    """Invoice getOne plus products/getOne for each line (for retail price, EAN, category)."""
+    """Invoice getOne + products/getOne (parallel) + productCategories/getOne per product category."""
     require_auth(request)
-    doc = await moloni.post(
-        "supplierInvoices/getOne",
-        {"company_id": settings.moloni_company_id, "document_id": document_id},
-    )
+    cid = settings.moloni_company_id
+    doc = await moloni.post("supplierInvoices/getOne", {"company_id": cid, "document_id": document_id})
     if not isinstance(doc, dict) or "products" not in doc:
         raise HTTPException(404, "Invoice not found")
-    pids = {int(p["product_id"]) for p in doc.get("products") or []}
-    products: dict[int, Any] = {}
-    for pid in pids:
-        products[pid] = await moloni.post(
-            "products/getOne",
-            {"company_id": settings.moloni_company_id, "product_id": pid},
+
+    # Unique product IDs preserving first-seen order
+    seen: set[int] = set()
+    unique_pids: list[int] = []
+    for p in doc.get("products") or []:
+        pid = int(p["product_id"])
+        if pid not in seen:
+            seen.add(pid)
+            unique_pids.append(pid)
+
+    # Fetch all products in parallel
+    product_results = await asyncio.gather(
+        *[moloni.post("products/getOne", {"company_id": cid, "product_id": pid}) for pid in unique_pids]
+    )
+    products: dict[str, Any] = {str(pid): res for pid, res in zip(unique_pids, product_results)}
+
+    # Collect unique category IDs from the fetched products
+    cat_ids: list[int] = list(
+        dict.fromkeys(
+            int(p["category_id"])
+            for p in products.values()
+            if isinstance(p, dict) and p.get("category_id")
         )
+    )
+
+    # Fetch each category in parallel to resolve parent_id (for dropdown pre-fill)
+    categories: dict[str, Any] = {}
+    if cat_ids:
+        cat_results = await asyncio.gather(
+            *[moloni.post("productCategories/getOne", {"company_id": cid, "category_id": cid_val}) for cid_val in cat_ids],
+            return_exceptions=True,
+        )
+        for cid_val, res in zip(cat_ids, cat_results):
+            if isinstance(res, dict) and "category_id" in res:
+                categories[str(cid_val)] = {
+                    "category_id": int(res["category_id"]),
+                    "parent_id": int(res.get("parent_id", 0) or 0),
+                    "name": str(res.get("name", "")),
+                }
+
     return {
         "document": doc,
         "products": products,
+        "categories": categories,
         "retail_vat_percent": float(settings.moloni_default_retail_vat_percent),
     }
 
@@ -275,6 +308,15 @@ async def list_categories(
         return normalize_category_list(raw if isinstance(raw, list) else [])
     raw_level = await fetch_categories_level(moloni, settings.moloni_company_id, parent_id)
     return normalize_category_list(raw_level if isinstance(raw_level, list) else [])
+
+
+@router.get("/moloni/categories/{category_id}")
+async def get_category(request: Request, moloni: MoloniDep, category_id: int, settings: Settings = Depends(get_settings)) -> Any:
+    require_auth(request)
+    return await moloni.post(
+        "productCategories/getOne",
+        {"company_id": settings.moloni_company_id, "category_id": category_id},
+    )
 
 
 class CategoryCreate(BaseModel):

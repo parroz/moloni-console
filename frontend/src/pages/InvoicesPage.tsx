@@ -32,7 +32,7 @@ export default function InvoicesPage() {
                 <th>N.º</th>
                 <th>Fornecedor</th>
                 <th>Data</th>
-                <th>Líquido</th>
+                <th style={{ textAlign: "right" }}>Líquido</th>
                 <th>Estado</th>
                 <th />
               </tr>
@@ -44,8 +44,16 @@ export default function InvoicesPage() {
                   <td>{r.number ?? "—"}</td>
                   <td>{r.entity_name ?? "—"}</td>
                   <td>{r.date ? String(r.date).slice(0, 10) : "—"}</td>
-                  <td>{r.net_value != null ? Number(r.net_value).toFixed(2) : "—"}</td>
-                  <td>{r.status === 1 ? "Fechado" : "Rascunho"}</td>
+                  <td style={{ fontVariantNumeric: "tabular-nums", textAlign: "right" }}>
+                    {r.net_value != null ? `${Number(r.net_value).toFixed(2)} €` : "—"}
+                  </td>
+                  <td>
+                    {r.status === 1 ? (
+                      <span className="badge badge-ok">Fechado</span>
+                    ) : (
+                      <span className="badge badge-muted">Rascunho</span>
+                    )}
+                  </td>
                   <td>
                     <Link className="btn" to={`/invoices/${r.document_id}`}>
                       Abrir

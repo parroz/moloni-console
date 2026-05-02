@@ -1,5 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiJson } from "../api";
 import {
@@ -44,7 +44,6 @@ type Doc = {
   status?: number;
   financial_discount?: number;
   special_discount?: number;
-  /** Moloni document totals (reference). */
   net_value?: number;
   taxes_value?: number;
   gross_value?: number;
@@ -56,25 +55,10 @@ type CatRow = { category_id: number; parent_id: number; name: string };
 type Detail = {
   document: Doc;
   products: Record<string, ProductOne | null>;
+  /** category_id → {category_id, parent_id, name} resolved via productCategories/getOne */
+  categories?: Record<string, CatRow>;
   retail_vat_percent?: number;
 };
-
-function initialCategoryParentChild(cid: number, cats: CatRow[]): { parentId: number; leafId: number } {
-  if (!cid || !cats.length) return { parentId: 0, leafId: 0 };
-  const byId = new Map(cats.map((c) => [c.category_id, c]));
-  const node = byId.get(cid);
-  if (!node) return { parentId: 0, leafId: cid };
-  if (node.parent_id === 0) return { parentId: cid, leafId: cid };
-  const parent = byId.get(node.parent_id);
-  if (parent && parent.parent_id === 0) return { parentId: parent.category_id, leafId: cid };
-  let cur = node;
-  while (cur.parent_id !== 0) {
-    const p = byId.get(cur.parent_id);
-    if (!p) return { parentId: 0, leafId: cid };
-    cur = p;
-  }
-  return { parentId: cur.category_id, leafId: cid };
-}
 
 type RowState = {
   productId: number;
@@ -88,11 +72,9 @@ type RowState = {
   retailPvp: number;
   productVatPercent: number;
   ean: string;
-  /** Descrição / resumo (produto ou linha). */
+  /** Kept in state so it's still sent to Moloni on save, but not shown as an editable field. */
   summary: string;
-  /** Moloni root category (parent_id === 0) for the first dropdown. */
   categoryParentId: number;
-  /** Moloni category_id to save (subcategory or root). */
   categoryId: number;
 };
 
@@ -107,12 +89,12 @@ export default function InvoiceDetailPage() {
     enabled: Number.isFinite(id),
   });
 
-  /** Carregado à parte para a fatura abrir de imediato (árvore completa pode ser lenta no Moloni). */
-  const catQ = useQuery({
-    queryKey: ["categories", "recursive"],
-    queryFn: () => apiJson<CatRow[]>("/moloni/categories?recursive=1"),
-    enabled: Boolean(detailQ.isSuccess && detailQ.data?.document),
+  /** Root categories (parent_id === 0) — one fast call, used for the Category dropdown. */
+  const rootsQ = useQuery({
+    queryKey: ["categories", 0],
+    queryFn: () => apiJson<CatRow[]>("/moloni/categories"),
     staleTime: 5 * 60 * 1000,
+    enabled: detailQ.isSuccess,
   });
 
   const [rows, setRows] = useState<RowState[]>([]);
@@ -129,7 +111,6 @@ export default function InvoiceDetailPage() {
 
   useEffect(() => {
     const d = detailQ.data;
-    const cats = catQ.data ?? [];
     if (!d?.document) return;
     const doc = d.document;
     setHeader({
@@ -140,14 +121,30 @@ export default function InvoiceDetailPage() {
       notes: String(doc.notes ?? ""),
       status: Number(doc.status ?? 0),
     });
-    const next: RowState[] = [];
     const retailRate =
       typeof d.retail_vat_percent === "number" && Number.isFinite(d.retail_vat_percent)
         ? d.retail_vat_percent
         : DEFAULT_RETAIL_VAT_PERCENT;
+    const catMap = d.categories ?? {};
+    const next: RowState[] = [];
     for (const line of doc.products || []) {
       const pid = Number(line.product_id);
       const p = d.products[String(pid)] as ProductOne | null | undefined;
+      const leafCat = Number(p?.category_id ?? 0);
+      // Resolve parent/leaf from the pre-fetched category info
+      const catInfo = catMap[String(leafCat)];
+      let parentId = 0;
+      let leafId = leafCat;
+      if (catInfo) {
+        if (catInfo.parent_id === 0) {
+          // It is itself a root category
+          parentId = catInfo.category_id;
+          leafId = catInfo.category_id;
+        } else {
+          parentId = catInfo.parent_id;
+          leafId = catInfo.category_id;
+        }
+      }
       if (!p || typeof p !== "object" || !("product_id" in p)) {
         next.push({
           productId: pid,
@@ -162,15 +159,12 @@ export default function InvoiceDetailPage() {
           productVatPercent: retailRate,
           ean: "",
           summary: String(line.summary ?? ""),
-          categoryParentId: 0,
-          categoryId: 0,
+          categoryParentId: parentId,
+          categoryId: leafId,
         });
         continue;
       }
-      const rate = retailRate;
       const pv = Number(p.price ?? 0);
-      const leafCat = Number(p.category_id ?? 0);
-      const { parentId, leafId } = initialCategoryParentChild(leafCat, cats);
       next.push({
         productId: pid,
         reference: String(line.reference ?? p.reference ?? ""),
@@ -180,8 +174,8 @@ export default function InvoiceDetailPage() {
         lineVatPercent: vatRateFromLineTaxes(line.taxes),
         discount: Number(line.discount ?? 0),
         retailPv: pv,
-        retailPvp: pvpFromPv(pv, rate),
-        productVatPercent: rate,
+        retailPvp: pvpFromPv(pv, retailRate),
+        productVatPercent: retailRate,
         ean: String(p.ean ?? ""),
         summary: String(line.summary ?? p.summary ?? ""),
         categoryParentId: parentId,
@@ -189,7 +183,39 @@ export default function InvoiceDetailPage() {
       });
     }
     setRows(next);
-  }, [detailQ.data, catQ.data]);
+  }, [detailQ.data]);
+
+  /** Unique non-zero parent IDs from current rows → drives subcategory loading. */
+  const parentIds = useMemo(
+    () => [...new Set(rows.map((r) => r.categoryParentId).filter((pid) => pid > 0))],
+    [rows],
+  );
+
+  /** One query per parent: loads its children on demand, cached 5 min. */
+  const childrenQueries = useQueries({
+    queries: parentIds.map((pid) => ({
+      queryKey: ["categories", pid],
+      queryFn: () => apiJson<CatRow[]>(`/moloni/categories?parent_id=${pid}`),
+      staleTime: 5 * 60 * 1000,
+    })),
+  });
+
+  const childrenByParent = useMemo(() => {
+    const map = new Map<number, CatRow[]>();
+    parentIds.forEach((pid, i) => {
+      const data = childrenQueries[i]?.data;
+      if (data) map.set(pid, [...data].sort((a, b) => a.name.localeCompare(b.name)));
+    });
+    return map;
+  }, [parentIds, childrenQueries]);
+
+  const rootCategories = useMemo(
+    () =>
+      (rootsQ.data ?? [])
+        .map((c) => ({ category_id: Number(c.category_id), parent_id: 0, name: String(c.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [rootsQ.data],
+  );
 
   const bulkMut = useMutation({
     mutationFn: (
@@ -233,7 +259,6 @@ export default function InvoiceDetailPage() {
     },
   });
 
-  /** Purchase-side totals from current rows (custo na fatura: qty × preço × (1 − desconto%), + IVA linha). */
   const purchaseTotals = useMemo(() => {
     let net = 0;
     let vat = 0;
@@ -243,11 +268,9 @@ export default function InvoiceDetailPage() {
       net += lineNet;
       vat += lineNet * ((Number(r.lineVatPercent) || 0) / 100);
     }
-    const gross = net + vat;
-    return { net, vat, gross };
+    return { net, vat, gross: net + vat };
   }, [rows]);
 
-  /** Retail reference: sum of qty × PV / PVP (not necessarily igual ao documento Moloni). */
   const retailTotals = useMemo(() => {
     let pv = 0;
     let pvp = 0;
@@ -258,40 +281,13 @@ export default function InvoiceDetailPage() {
     return { pv, pvp };
   }, [rows]);
 
-  const categories = useMemo(() => {
-    const raw = catQ.data ?? [];
-    return raw.map((c) => ({
-      category_id: Number(c.category_id),
-      parent_id: Number(c.parent_id ?? 0),
-      name: String(c.name ?? ""),
-    }));
-  }, [catQ.data]);
-  const rootCategories = useMemo(
-    () => [...categories].filter((c) => c.parent_id === 0).sort((a, b) => a.name.localeCompare(b.name)),
-    [categories],
-  );
-  const childrenOf = useMemo(() => {
-    const byParent = new Map<number, CatRow[]>();
-    for (const c of categories) {
-      const k = c.parent_id;
-      if (!byParent.has(k)) byParent.set(k, []);
-      byParent.get(k)!.push(c);
-    }
-    for (const arr of byParent.values()) arr.sort((a, b) => a.name.localeCompare(b.name));
-    return (parentId: number) => byParent.get(parentId) ?? [];
-  }, [categories]);
-
   function updateRow(i: number, patch: Partial<RowState>) {
     setRows((prev) => {
       const copy = [...prev];
-      const base = copy[i];
-      const cur = { ...base, ...patch };
-      const rate = cur.productVatPercent;
+      const cur = { ...copy[i], ...patch };
       if (patch.categoryParentId != null) {
-        const pid = Number(patch.categoryParentId);
-        cur.categoryParentId = pid;
-        const kids = childrenOf(pid);
-        cur.categoryId = kids.length ? kids[0].category_id : pid;
+        cur.categoryParentId = Number(patch.categoryParentId);
+        cur.categoryId = 0; // reset; subcategory dropdown re-populates once children load
       }
       if (patch.categoryId != null) {
         cur.categoryId = Number(patch.categoryId);
@@ -300,7 +296,7 @@ export default function InvoiceDetailPage() {
         const raw = Number(patch.retailPvp);
         const pvp = Number.isFinite(raw) ? Math.round(raw * 100) / 100 : 0;
         cur.retailPvp = pvp;
-        cur.retailPv = pvFromPvp(pvp, rate);
+        cur.retailPv = pvFromPvp(pvp, cur.productVatPercent);
       }
       copy[i] = cur;
       return copy;
@@ -326,16 +322,12 @@ export default function InvoiceDetailPage() {
     URL.revokeObjectURL(a.href);
   }
 
-  function printReport() {
-    window.print();
-  }
-
   function pushProducts() {
     setMsg(null);
     setErr(null);
     const bad = rows.filter((r) => !Number.isFinite(r.retailPvp));
     if (bad.length) {
-      setErr(`PVP inválido (número) nas linhas: ${bad.map((r) => r.reference || r.productId).join(", ")}`);
+      setErr(`PVP inválido nas linhas: ${bad.map((r) => r.reference || r.productId).join(", ")}`);
       return;
     }
     const items = rows.map((r) => {
@@ -362,14 +354,6 @@ export default function InvoiceDetailPage() {
   function pushDocument() {
     setMsg(null);
     setErr(null);
-    const linePatches = rows.map((r) => ({
-      product_id: r.productId,
-      qty: r.qty,
-      price: r.lineUnitPrice,
-      discount: r.discount,
-      name: r.lineName,
-      summary: r.summary,
-    }));
     docMut.mutate({
       header: {
         date: header.date || undefined,
@@ -379,13 +363,20 @@ export default function InvoiceDetailPage() {
         notes: header.notes,
         status: header.status,
       },
-      lines: linePatches,
+      lines: rows.map((r) => ({
+        product_id: r.productId,
+        qty: r.qty,
+        price: r.lineUnitPrice,
+        discount: r.discount,
+        name: r.lineName,
+        summary: r.summary,
+      })),
     });
   }
 
-  if (!Number.isFinite(id)) {
-    return <p className="error">ID inválido</p>;
-  }
+  if (!Number.isFinite(id)) return <p className="error">ID inválido</p>;
+
+  const catsLoading = rootsQ.isFetching || childrenQueries.some((q) => q.isFetching);
 
   return (
     <div>
@@ -443,64 +434,57 @@ export default function InvoiceDetailPage() {
           </div>
 
           <div className="row-actions no-print">
-            <button type="button" className="btn primary" disabled={bulkMut.isPending} onClick={() => pushProducts()}>
+            <button type="button" className="btn primary" disabled={bulkMut.isPending} onClick={pushProducts}>
               Atualizar produtos no Moloni
             </button>
-            <button type="button" className="btn" disabled={docMut.isPending} onClick={() => pushDocument()}>
-              Atualizar documento (linhas + cabeçalho)
+            <button type="button" className="btn" disabled={docMut.isPending} onClick={pushDocument}>
+              Atualizar documento
             </button>
-            <button type="button" className="btn" onClick={() => exportLabelsCsv()}>
+            <button type="button" className="btn" onClick={exportLabelsCsv}>
               Exportar CSV etiquetas
             </button>
-            <button type="button" className="btn" onClick={() => printReport()}>
-              Imprimir relatório
+            <button type="button" className="btn" onClick={() => window.print()}>
+              Imprimir
             </button>
           </div>
 
           <div className="card" id="invoice-report">
-            <div style={{ marginBottom: "1rem" }}>
+            <div style={{ marginBottom: "0.75rem" }}>
               <h2 style={{ margin: 0, fontSize: "1.15rem" }}>Relatório · Fatura #{id}</h2>
               <p className="muted" style={{ margin: "0.25rem 0 0" }}>
                 {detailQ.data.document.entity_name ?? "Fornecedor"} · {header.date || "—"}
               </p>
             </div>
-            <h2 className="no-print" style={{ fontSize: "1.05rem" }}>
-              Linhas
-            </h2>
-            <p className="muted no-print" style={{ margin: "0.25rem 0 0.75rem", maxWidth: "52rem" }}>
-              Retalho: edite só o <strong>PVP</strong> (€ com IVA, 2 decimais). O preço líquido no Moloni segue{" "}
-              <code>PVP / (1 + IVA/100)</code>. «IVA linha» é o IVA da fatura de compra. As categorias carregam num
-              segundo pedido para a página não ficar presa. Segunda linha: descrição e EAN.
-            </p>
-            {catQ.isFetching ? <p className="muted no-print">A carregar categorias…</p> : null}
-            {catQ.error ? <p className="error no-print">{(catQ.error as Error).message}</p> : null}
+            {catsLoading ? <p className="muted no-print" style={{ margin: "0 0 0.5rem" }}>A carregar categorias…</p> : null}
+
             <div style={{ overflow: "auto" }}>
               <table className="data invoice-lines-table">
                 <thead>
                   <tr>
-                    <th>Ref.</th>
-                    <th>Nome</th>
-                    <th>Qtd</th>
-                    <th>Custo unit.</th>
-                    <th>Custo total</th>
-                    <th>IVA linha %</th>
-                    <th>PVP (c/ IVA)</th>
-                    <th>Categoria</th>
-                    <th>Subcategoria</th>
+                    <th className="invoice-th-ref">Ref.</th>
+                    <th className="invoice-th-qty">Qtd</th>
+                    <th className="invoice-th-cost">Custo unit.</th>
+                    <th className="invoice-th-total">Total</th>
+                    <th className="invoice-th-vat">IVA%</th>
+                    <th className="invoice-th-pvp">PVP (c/ IVA)</th>
+                    <th className="invoice-th-cat">Categoria</th>
+                    <th className="invoice-th-subcat">Subcategoria</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {rows.map((r, i) => {
-                    let subOpts = childrenOf(r.categoryParentId);
-                    if (subOpts.length === 0 && r.categoryParentId > 0) {
-                      const root = rootCategories.find((c) => c.category_id === r.categoryParentId);
-                      if (root) subOpts = [root];
+                {rows.map((r, i) => {
+                    // Subcategory options = children of the selected category (parent).
+                    // Until those children load, fall back to the resolved category from
+                    // detail.categories so the dropdown still shows the correct name.
+                    const detailCats = detailQ.data?.categories ?? {};
+                    const loadedChildren = childrenByParent.get(r.categoryParentId) ?? [];
+                    const subOpts: CatRow[] = [...loadedChildren];
+                    if (r.categoryId > 0 && !subOpts.some((c) => c.category_id === r.categoryId)) {
+                      const resolved = detailCats[String(r.categoryId)];
+                      if (resolved) subOpts.unshift(resolved);
                     }
-                    const leafOk = subOpts.some((k) => k.category_id === r.categoryId);
-                    const leafExtra = !leafOk ? categories.find((c) => c.category_id === r.categoryId) : undefined;
-                    if (leafExtra) subOpts = [...subOpts, leafExtra];
                     return (
-                      <Fragment key={r.productId}>
+                      <tbody key={r.productId} className="product-block">
+                        {/* Row 1: Ref | Qty | Cost | Total | VAT | PVP | Category | Subcategory */}
                         <tr className="invoice-line-r1">
                           <td rowSpan={2} className="invoice-td-ref">
                             <input
@@ -509,17 +493,14 @@ export default function InvoiceDetailPage() {
                               onChange={(e) => updateRow(i, { reference: e.target.value })}
                             />
                           </td>
-                          <td>
-                            <input value={r.lineName} onChange={(e) => updateRow(i, { lineName: e.target.value })} />
-                          </td>
-                          <td>
+                          <td className="invoice-td-qty">
                             <input
                               type="number"
                               value={r.qty}
                               onChange={(e) => updateRow(i, { qty: Number(e.target.value) })}
                             />
                           </td>
-                          <td>
+                          <td className="invoice-td-cost">
                             <input
                               type="number"
                               step="0.0001"
@@ -527,18 +508,23 @@ export default function InvoiceDetailPage() {
                               onChange={(e) => updateRow(i, { lineUnitPrice: Number(e.target.value) })}
                             />
                           </td>
-                          <td>{(r.qty * r.lineUnitPrice).toFixed(2)}</td>
-                          <td>{r.lineVatPercent}%</td>
-                          <td>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min={0}
-                              value={r.retailPvp}
-                              onChange={(e) => updateRow(i, { retailPvp: Number(e.target.value) })}
-                            />
+                          <td className="invoice-td-total">
+                            {(r.qty * r.lineUnitPrice).toFixed(2)}
                           </td>
-                          <td>
+                          <td className="invoice-td-vat">{r.lineVatPercent}%</td>
+                          <td className="invoice-td-pvp">
+                            <div className="pvp-cell">
+                              <input
+                                type="number"
+                                step="0.01"
+                                min={0}
+                                value={r.retailPvp}
+                                onChange={(e) => updateRow(i, { retailPvp: Number(e.target.value) })}
+                              />
+                              {r.retailPv > 0 ? <span className="pv-hint">PV {r.retailPv.toFixed(4)} €</span> : null}
+                            </div>
+                          </td>
+                          <td className="invoice-td-cat">
                             <select
                               value={r.categoryParentId}
                               onChange={(e) => updateRow(i, { categoryParentId: Number(e.target.value) })}
@@ -546,61 +532,63 @@ export default function InvoiceDetailPage() {
                               <option value={0}>—</option>
                               {rootCategories.map((c) => (
                                 <option key={c.category_id} value={c.category_id}>
-                                  {c.name} (#{c.category_id})
+                                  {c.name}
                                 </option>
                               ))}
                             </select>
                           </td>
-                          <td>
+                          <td className="invoice-td-subcat">
                             <select
                               value={r.categoryId}
                               onChange={(e) => updateRow(i, { categoryId: Number(e.target.value) })}
+                              disabled={subOpts.length === 0}
                             >
                               <option value={0}>—</option>
                               {subOpts.map((c) => (
                                 <option key={c.category_id} value={c.category_id}>
-                                  {c.name} (#{c.category_id})
+                                  {c.name}
                                 </option>
                               ))}
                             </select>
                           </td>
                         </tr>
+                        {/* Row 2: Name (wide) | EAN */}
                         <tr className="invoice-line-r2">
-                          <td colSpan={5} className="invoice-td-desc">
-                            <textarea
-                              className="invoice-input-desc"
-                              value={r.summary}
-                              rows={2}
-                              onChange={(e) => updateRow(i, { summary: e.target.value })}
-                              placeholder="Descrição"
-                            />
+                          <td colSpan={5} className="invoice-td-name">
+                            <label className="field-label">
+                              Nome
+                              <input
+                                className="invoice-input-name"
+                                value={r.lineName}
+                                onChange={(e) => updateRow(i, { lineName: e.target.value })}
+                              />
+                            </label>
                           </td>
-                          <td colSpan={4} className="invoice-td-ean">
-                            <input
-                              className="invoice-input-ean"
-                              value={r.ean}
-                              maxLength={20}
-                              onChange={(e) => updateRow(i, { ean: e.target.value })}
-                            />
+                          <td colSpan={2} className="invoice-td-ean">
+                            <label className="field-label">
+                              EAN
+                              <input
+                                className="invoice-input-ean"
+                                value={r.ean}
+                                maxLength={20}
+                                onChange={(e) => updateRow(i, { ean: e.target.value })}
+                                placeholder="—"
+                              />
+                            </label>
                           </td>
                         </tr>
-                      </Fragment>
+                      </tbody>
                     );
                   })}
-                </tbody>
               </table>
             </div>
 
             <div className="invoice-totals-block">
-              <h3 className="invoice-totals-title">Totais — custo na fatura (linhas)</h3>
-              <p className="muted invoice-totals-hint">
-                Base sem IVA, IVA calculado pela taxa de cada linha, total com IVA. Desconto de linha tratado como % (0–100),
-                como na API Moloni.
-              </p>
+              <h3 className="invoice-totals-title">Totais — custo na fatura</h3>
               <table className="data invoice-totals-table">
                 <tbody>
                   <tr>
-                    <th scope="row">Total s/ IVA (base)</th>
+                    <th scope="row">Total s/ IVA</th>
                     <td>{purchaseTotals.net.toFixed(2)} €</td>
                   </tr>
                   <tr>
@@ -615,9 +603,8 @@ export default function InvoiceDetailPage() {
               </table>
 
               <h3 className="invoice-totals-title" style={{ marginTop: "1.25rem" }}>
-                Totais — retalho (referência PVP)
+                Totais — retalho
               </h3>
-              <p className="muted invoice-totals-hint">Soma de quantidade × PV e × PVP (preços de venda no artigo).</p>
               <table className="data invoice-totals-table">
                 <tbody>
                   <tr>
@@ -633,21 +620,15 @@ export default function InvoiceDetailPage() {
 
               {detailQ.data.document.net_value != null && detailQ.data.document.taxes_value != null ? (
                 <p className="muted invoice-totals-hint" style={{ marginTop: "1rem" }}>
-                  Valores no documento Moloni (referência): líquido{" "}
-                  <strong>{Number(detailQ.data.document.net_value).toFixed(2)} €</strong> · IVA{" "}
+                  Moloni: líquido <strong>{Number(detailQ.data.document.net_value).toFixed(2)} €</strong> · IVA{" "}
                   <strong>{Number(detailQ.data.document.taxes_value).toFixed(2)} €</strong>
                   {detailQ.data.document.gross_value != null ? (
-                    <>
-                      {" "}
-                      · bruto <strong>{Number(detailQ.data.document.gross_value).toFixed(2)} €</strong>
-                    </>
+                    <> · bruto <strong>{Number(detailQ.data.document.gross_value).toFixed(2)} €</strong></>
                   ) : null}
-                  . Podem diferir ligeiramente dos totais calculados se houver arredondamentos ou descontos globais.
                 </p>
               ) : null}
             </div>
           </div>
-
         </>
       ) : null}
     </div>
