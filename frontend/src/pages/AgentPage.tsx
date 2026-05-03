@@ -1,174 +1,102 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiJson } from "../api";
-import type { AgentEvent, AgentSession, ContentBlock, SupplierOption } from "../agent/types";
-import { useAgentStream } from "../agent/useAgentStream";
+import type { AgentSession, ApplyEvent, ExtractedLine, SupplierOption } from "../agent/types";
+import { useSSEPost } from "../agent/useAgentStream";
 
-// ── Local view-model: a flattened transcript of "things to display" ──
+// ── session storage ──────────────────────────────────────────────────────────
 
-type ChatItem =
-  | { kind: "user"; text: string; key: string }
-  | { kind: "assistant"; text: string; key: string; streaming?: boolean }
-  | {
-      kind: "tool";
-      key: string;
-      id: string;
-      name: string;
-      server: string;
-      input: Record<string, unknown>;
-      result?: { isError: boolean; text: string };
-    };
+const SESSION_KEY = "moloni-agent-session-id-v2";
 
-function flattenSessionMessages(messages: AgentSession["messages"]): ChatItem[] {
-  const items: ChatItem[] = [];
-  let toolCallById: Record<string, { idx: number }> = {};
-  messages.forEach((m, mi) => {
-    m.content.forEach((block: ContentBlock, bi) => {
-      const key = `${mi}.${bi}`;
-      if (block.type === "text" && block.text) {
-        items.push({
-          kind: m.role === "user" ? "user" : "assistant",
-          text: block.text,
-          key,
-        });
-      } else if (block.type === "tool_use" || block.type === "mcp_tool_use") {
-        toolCallById[block.id] = { idx: items.length };
-        items.push({
-          kind: "tool",
-          key,
-          id: block.id,
-          name: block.name,
-          server: ("server_name" in block ? block.server_name : "") || "",
-          input: block.input || {},
-        });
-      } else if (block.type === "mcp_tool_result") {
-        const target = toolCallById[block.tool_use_id];
-        const text =
-          (block.content || [])
-            .map((c) => (c.type === "text" ? c.text || "" : ""))
-            .join("\n")
-            .trim() || "(sem conteúdo)";
-        if (target && items[target.idx].kind === "tool") {
-          (items[target.idx] as Extract<ChatItem, { kind: "tool" }>).result = {
-            isError: !!block.is_error,
-            text,
-          };
-        }
-      }
-    });
-  });
-  return items;
+function readStoredId(): string | null {
+  try { return sessionStorage.getItem(SESSION_KEY); } catch { return null; }
 }
-
-// ── Stored-locally session id (so we don't lose context on tab reload) ──
-const SESSION_KEY = "moloni-agent-session-id";
-
-function readStoredSessionId(): string | null {
-  try {
-    return sessionStorage.getItem(SESSION_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredSessionId(id: string | null) {
+function writeStoredId(id: string | null) {
   try {
     if (id) sessionStorage.setItem(SESSION_KEY, id);
     else sessionStorage.removeItem(SESSION_KEY);
-  } catch {
-    /* noop */
-  }
+  } catch { /* noop */ }
 }
 
-// ── Page ──
+// ── page ─────────────────────────────────────────────────────────────────────
 
 export default function AgentPage() {
   const qc = useQueryClient();
-  const [sessionId, setSessionId] = useState<string | null>(readStoredSessionId());
+  const [sessionId, setSessionId] = useState<string | null>(readStoredId);
 
-  // Live event buffer (text deltas + tool events arriving over SSE for the *current* in-flight turn)
-  const [liveAssistant, setLiveAssistant] = useState("");
-  const [liveTools, setLiveTools] = useState<Extract<ChatItem, { kind: "tool" }>[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUsage, setLastUsage] = useState<{
-    input?: number;
-    output?: number;
-    cache_read?: number;
-    cache_create?: number;
-  } | null>(null);
-  // High-level "what's the agent doing right now?" so the user sees progress
-  // even during the long pre-stream latency (PDF + MCP discovery on Anthropic side).
-  const [phase, setPhase] = useState<
-    | "idle"
-    | "uploading"
-    | "sending"
-    | "waiting"
-    | "streaming"
-    | "tool"
-  >("idle");
-  const [phaseDetail, setPhaseDetail] = useState<string>("");
+  // Local editable copy of lines (kept in sync from session.extracted)
+  const [editLines, setEditLines] = useState<ExtractedLine[]>([]);
+  const lastExtractedRef = useRef<string | null>(null); // prevent overwriting user edits
 
-  // Suppliers dropdown
+  // Apply stream state
+  const [applyLog, setApplyLog] = useState<ApplyEvent[]>([]);
+  const [applyDone, setApplyDone] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+
+  const { stream: streamApply, streaming: applying } = useSSEPost<ApplyEvent>();
+
+  // ── suppliers ──
   const suppliersQ = useQuery({
     queryKey: ["agent", "suppliers"],
     queryFn: () => apiJson<SupplierOption[]>("/agent/suppliers"),
   });
 
-  // Session bootstrap: fetch existing or create new
+  // ── session ──
   const sessionQ = useQuery({
     queryKey: ["agent", "session", sessionId],
     queryFn: async () => {
       if (!sessionId) return null;
       try {
         return await apiJson<AgentSession>(`/agent/sessions/${sessionId}`);
-      } catch (e) {
-        // Session likely expired/restarted — drop and recreate
-        writeStoredSessionId(null);
+      } catch {
+        writeStoredId(null);
         setSessionId(null);
-        throw e;
+        return null;
       }
     },
     enabled: !!sessionId,
     refetchOnWindowFocus: false,
   });
 
+  const session = sessionQ.data ?? null;
+
+  // Sync editLines when a new extraction arrives
+  useEffect(() => {
+    const lines = session?.extracted?.lines;
+    if (!lines) return;
+    const key = JSON.stringify(lines);
+    if (key === lastExtractedRef.current) return; // already loaded
+    lastExtractedRef.current = key;
+    setEditLines(lines.map((l) => ({ ...l })));
+    // Reset apply state for a fresh extraction
+    setApplyLog([]);
+    setApplyDone(false);
+    setApplyError(null);
+  }, [session?.extracted?.lines]);
+
+  // ── create session ──
   const createSessionMut = useMutation({
-    mutationFn: () =>
+    mutationFn: (supplierSlug?: string) =>
       apiJson<AgentSession>("/agent/sessions", {
         method: "POST",
-        body: JSON.stringify({ supplier_slug: "auto", test_mode: true }),
+        body: JSON.stringify({ supplier_slug: supplierSlug ?? "american_vintage" }),
       }),
     onSuccess: (s) => {
-      writeStoredSessionId(s.session_id);
+      writeStoredId(s.session_id);
       setSessionId(s.session_id);
       qc.setQueryData(["agent", "session", s.session_id], s);
     },
   });
 
-  // Auto-create session on first visit if there's none
   useEffect(() => {
     if (!sessionId && !createSessionMut.isPending) {
-      createSessionMut.mutate();
+      createSessionMut.mutate(undefined);
     }
   }, [sessionId, createSessionMut]);
 
-  const session = sessionQ.data ?? null;
-
-  // Settings (supplier slug, test mode) — patch on change
-  const patchSettingsMut = useMutation({
-    mutationFn: (body: { supplier_slug?: string; test_mode?: boolean }) =>
-      apiJson<AgentSession>(`/agent/sessions/${sessionId}/settings`, {
-        method: "PATCH",
-        body: JSON.stringify(body),
-      }),
-    onSuccess: (s) => qc.setQueryData(["agent", "session", sessionId], s),
-  });
-
-  // PDF upload
+  // ── upload PDF ──
   const uploadMut = useMutation({
     mutationFn: async (file: File) => {
-      setPhase("uploading");
-      setPhaseDetail(file.name);
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch(`/api/agent/sessions/${sessionId}/upload`, {
@@ -180,372 +108,362 @@ export default function AgentPage() {
       return (await res.json()) as AgentSession;
     },
     onSuccess: (s) => {
+      lastExtractedRef.current = null; // allow sync on next extraction
+      setEditLines([]);
+      setApplyLog([]);
+      setApplyDone(false);
+      setApplyError(null);
       qc.setQueryData(["agent", "session", sessionId], s);
-      setLiveAssistant("");
-      setLiveTools([]);
-      setError(null);
-      setPhase("idle");
-      setPhaseDetail("");
-    },
-    onError: (e: Error) => {
-      setError(e.message);
-      setPhase("idle");
-      setPhaseDetail("");
     },
   });
 
-  const { send, streaming } = useAgentStream(sessionId);
-
-  const [draft, setDraft] = useState("");
-
-  const runMessage = useCallback(
-    async (text: string) => {
-      if (!text.trim() || !sessionId || streaming) return;
-      setError(null);
-      setLiveAssistant("");
-      setLiveTools([]);
-      setPhase("sending");
-      setPhaseDetail("");
-
-      try {
-        await send(text, (ev: AgentEvent) => {
-          switch (ev.type) {
-            case "user_message_persisted":
-              setPhase("waiting");
-              setPhaseDetail("a enviar para Claude e a anexar PDF…");
-              break;
-            case "stream_started":
-              setPhase("waiting");
-              setPhaseDetail("Claude a processar o PDF — pode demorar 10-30s");
-              break;
-            case "text_delta":
-              if (phase !== "streaming") {
-                setPhase("streaming");
-                setPhaseDetail("");
-              }
-              setLiveAssistant((prev) => prev + ev.text);
-              break;
-            case "tool_use":
-              setPhase("tool");
-              setPhaseDetail(`a chamar ${ev.name}…`);
-              setLiveTools((prev) => [
-                ...prev,
-                {
-                  kind: "tool",
-                  key: `live-${ev.id}`,
-                  id: ev.id,
-                  name: ev.name,
-                  server: ev.server_name,
-                  input: ev.input,
-                },
-              ]);
-              break;
-            case "tool_result":
-              setLiveTools((prev) =>
-                prev.map((t) =>
-                  t.id === ev.tool_use_id
-                    ? {
-                        ...t,
-                        result: {
-                          isError: ev.is_error,
-                          text:
-                            (ev.content || [])
-                              .map((c) => (c.type === "text" ? c.text || "" : ""))
-                              .join("\n")
-                              .trim() || "(sem conteúdo)",
-                        },
-                      }
-                    : t,
-                ),
-              );
-              setPhase("waiting");
-              setPhaseDetail("a continuar análise…");
-              break;
-            case "message_complete":
-              setLastUsage({
-                input: ev.usage.input_tokens,
-                output: ev.usage.output_tokens,
-                cache_read: ev.usage.cache_read_input_tokens,
-                cache_create: ev.usage.cache_creation_input_tokens,
-              });
-              break;
-            case "error":
-              setError(ev.message);
-              setPhase("idle");
-              setPhaseDetail("");
-              break;
-            case "done":
-              // refetch the session so its persisted history replaces our live buffer
-              qc.invalidateQueries({ queryKey: ["agent", "session", sessionId] });
-              setLiveAssistant("");
-              setLiveTools([]);
-              setPhase("idle");
-              setPhaseDetail("");
-              break;
-          }
-        });
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-        setPhase("idle");
-        setPhaseDetail("");
-      }
+  // ── extract ──
+  const extractMut = useMutation({
+    mutationFn: () =>
+      apiJson<AgentSession>(`/agent/sessions/${sessionId}/extract`, { method: "POST" }),
+    onSuccess: (s) => {
+      qc.setQueryData(["agent", "session", sessionId], s);
     },
-    [sessionId, streaming, send, qc, phase],
-  );
+  });
 
-  const handleSend = useCallback(async () => {
-    const text = draft.trim();
-    if (!text) return;
-    setDraft("");
-    await runMessage(text);
-  }, [draft, runMessage]);
+  // ── apply ──
+  const handleApply = useCallback(async () => {
+    if (!sessionId || applying) return;
+    setApplyLog([]);
+    setApplyDone(false);
+    setApplyError(null);
 
-  const handleProcess = useCallback(async () => {
-    await runMessage(
-      "Processa esta fatura. Extrai todos os dados (cabeçalho, totais, IVAs, linhas), expande variantes por cor e tamanho, gera as referências, verifica os produtos no Moloni e prepara a fatura de fornecedor segundo as regras do fornecedor.",
+    // Patch edits to backend first, then stream apply
+    try {
+      await apiJson(`/agent/sessions/${sessionId}/data`, {
+        method: "PATCH",
+        body: JSON.stringify({ lines: editLines }),
+      });
+    } catch (e) {
+      setApplyError(`Erro ao guardar edições: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+
+    try {
+      await streamApply(`/api/agent/sessions/${sessionId}/apply`, (ev) => {
+        setApplyLog((prev) => [...prev, ev]);
+        if (ev.type === "done") setApplyDone(true);
+        if (ev.type === "invoice_error") setApplyError(ev.message);
+      });
+    } catch (e) {
+      setApplyError(e instanceof Error ? e.message : String(e));
+    }
+  }, [sessionId, applying, editLines, streamApply]);
+
+  // ── line edits ──
+  function updateLine(idx: number, field: keyof ExtractedLine, value: string | number) {
+    setEditLines((prev) =>
+      prev.map((l, i) => (i === idx ? { ...l, [field]: value } : l)),
     );
-  }, [runMessage]);
+  }
+  function removeLine(idx: number) {
+    setEditLines((prev) => prev.filter((_, i) => i !== idx));
+  }
 
-  // ── Render ──
+  // ── render ──
 
-  const transcript = useMemo(
-    () => (session ? flattenSessionMessages(session.messages) : []),
-    [session],
-  );
-
-  if (!sessionId || !session) {
+  if (!sessionId || (!session && sessionQ.isLoading)) {
     return (
       <div>
         <h1>Agente</h1>
         <p className="muted">A iniciar sessão…</p>
-        {createSessionMut.error ? (
-          <p className="error">{(createSessionMut.error as Error).message}</p>
-        ) : null}
       </div>
     );
   }
 
+  const extracted = session?.extracted ?? null;
+  const hasPdf = session?.has_pdf ?? false;
+  const busy = applying || extractMut.isPending || uploadMut.isPending;
+
   return (
-    <div>
+    <div className="agent-page">
       <h1>Agente · Faturas de fornecedor</h1>
 
-      <div className="card no-print">
-        <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr auto" }}>
-          <label>
+      {/* ── Card 1: Upload ── */}
+      <div className="card">
+        <div className="agent-upload-row">
+          <label className="agent-upload-label">
             Fornecedor
             <select
-              value={session.supplier_slug}
-              onChange={(e) =>
-                patchSettingsMut.mutate({ supplier_slug: e.target.value })
-              }
-            >
-              {(suppliersQ.data ?? []).map((s) => (
-                <option key={s.slug} value={s.slug}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Modo
-            <select
-              value={session.test_mode ? "test" : "live"}
-              onChange={(e) =>
-                patchSettingsMut.mutate({ test_mode: e.target.value === "test" })
-              }
-            >
-              <option value="test">Modo de teste (não escreve no Moloni)</option>
-              <option value="live">Modo real (cria produtos e faturas)</option>
-            </select>
-          </label>
-          <div style={{ alignSelf: "end" }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={async () => {
-                await apiJson(`/agent/sessions/${sessionId}`, { method: "DELETE" });
-                writeStoredSessionId(null);
+              value={session?.supplier_slug ?? "american_vintage"}
+              onChange={(e) => {
+                // Create a fresh session with the new supplier
+                writeStoredId(null);
                 setSessionId(null);
-                setLiveAssistant("");
-                setLiveTools([]);
-                setError(null);
-                createSessionMut.mutate();
+                createSessionMut.mutate(e.target.value);
               }}
-              disabled={streaming}
+              disabled={busy}
             >
-              Nova sessão
-            </button>
-          </div>
-        </div>
-        {!session.test_mode ? (
-          <p className="muted" style={{ marginTop: "0.5rem" }}>
-            ⚠ Modo real: o agente vai criar produtos e faturas no Moloni sem perguntar.
-          </p>
-        ) : null}
-      </div>
+              {(suppliersQ.data ?? [{ slug: "american_vintage", label: "American Vintage" }]).map(
+                (s) => (
+                  <option key={s.slug} value={s.slug}>
+                    {s.label}
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
 
-      <Dropzone
-        hasPdf={session.has_pdf}
-        filename={session.pdf_filename}
-        uploading={uploadMut.isPending}
-        onFile={(f) => uploadMut.mutate(f)}
-      />
+          <Dropzone
+            hasPdf={hasPdf}
+            filename={session?.pdf_filename ?? null}
+            uploading={uploadMut.isPending}
+            disabled={busy}
+            onFile={(f) => uploadMut.mutate(f)}
+          />
 
-      <div className="card">
-        <h2 style={{ fontSize: "1.05rem" }}>Conversa</h2>
-
-        <PhaseBanner phase={phase} detail={phaseDetail} />
-
-        {transcript.length === 0 &&
-        !liveAssistant &&
-        liveTools.length === 0 &&
-        phase === "idle" ? (
-          session.has_pdf ? (
-            <p className="muted">
-              PDF carregado. Carrega <strong>Processar fatura</strong> em baixo, ou escreve uma instrução personalizada.
-            </p>
-          ) : (
-            <p className="muted">Carrega um PDF para começar.</p>
-          )
-        ) : null}
-
-        <div className="agent-thread">
-          {transcript.map((it) => (
-            <ChatItemView key={it.key} item={it} />
-          ))}
-          {liveTools.map((t) => (
-            <ChatItemView key={t.key} item={t} />
-          ))}
-          {liveAssistant ? (
-            <ChatItemView
-              key="live-text"
-              item={{ kind: "assistant", text: liveAssistant, key: "live-text", streaming: true }}
-            />
-          ) : null}
-        </div>
-
-        {error ? <p className="error">{error}</p> : null}
-
-        {/* Primary action: one-click "Processar fatura" — only shown while there
-            are no messages yet, so the chat textarea takes over after the first turn. */}
-        {transcript.length === 0 && session.has_pdf ? (
-          <div style={{ marginTop: "0.75rem" }}>
+          {hasPdf && !extracted && (
             <button
               type="button"
               className="btn primary"
-              onClick={handleProcess}
-              disabled={streaming}
-              style={{ fontSize: "0.95rem", padding: "0.6rem 1.1rem" }}
+              onClick={() => extractMut.mutate()}
+              disabled={busy}
             >
-              {streaming ? <Spinner /> : null}
-              {streaming ? " A processar…" : "▶ Processar fatura"}
+              {extractMut.isPending ? <><Spinner /> A extrair…</> : "▶ Extrair fatura"}
             </button>
-          </div>
-        ) : null}
+          )}
 
-        <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.5rem" }}>
-          <textarea
-            rows={2}
-            value={draft}
-            placeholder={
-              session.has_pdf
-                ? "Instrução para o agente…"
-                : "Carrega um PDF primeiro, depois escreve aqui."
-            }
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            style={{ flex: 1, resize: "vertical", minHeight: "2.5rem", padding: "0.5rem" }}
-            disabled={streaming || !session.has_pdf}
-          />
-          <button
-            type="button"
-            className="btn"
-            onClick={handleSend}
-            disabled={streaming || !draft.trim() || !session.has_pdf}
-            style={{ alignSelf: "flex-start" }}
-          >
-            {streaming ? "A pensar…" : "Enviar"}
-          </button>
+          {hasPdf && extracted && !applying && (
+            <span className="agent-extracted-badge">✓ Extraído</span>
+          )}
         </div>
 
-        {lastUsage ? (
-          <p className="muted" style={{ marginTop: "0.4rem", fontSize: "0.75rem" }}>
-            Última resposta: {lastUsage.input ?? 0} in · {lastUsage.output ?? 0} out · cache hit{" "}
-            {lastUsage.cache_read ?? 0}
+        {uploadMut.error && (
+          <p className="error" style={{ marginTop: "0.5rem" }}>
+            {(uploadMut.error as Error).message}
           </p>
-        ) : null}
+        )}
+        {extractMut.error && (
+          <p className="error" style={{ marginTop: "0.5rem" }}>
+            {(extractMut.error as Error).message}
+          </p>
+        )}
+
+        {extractMut.isPending && (
+          <div className="agent-phase" style={{ marginTop: "0.75rem" }}>
+            <Spinner />
+            <span className="agent-phase-label">A ler PDF com Claude…</span>
+            <span className="agent-phase-detail muted">pode demorar 10–20 s</span>
+          </div>
+        )}
       </div>
+
+      {/* ── Card 2: Review table ── */}
+      {extracted && (
+        <div className="card">
+          <div className="agent-review-header">
+            <div>
+              <h2 style={{ margin: 0, fontSize: "1.05rem" }}>Revisão da fatura</h2>
+              <p className="muted" style={{ margin: "0.2rem 0 0" }}>
+                {extracted.supplier.name} · Fatura {extracted.header.invoice_number} ·{" "}
+                {extracted.header.date} · {extracted.header.grand_total.toFixed(2)} EUR
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={handleApply}
+              disabled={busy || editLines.length === 0}
+            >
+              {applying ? <><Spinner /> A aplicar…</> : "Aplicar no Moloni"}
+            </button>
+          </div>
+
+          {extracted.reconciliation.warnings.length > 0 && (
+            <div className="agent-warnings">
+              {extracted.reconciliation.warnings.map((w, i) => (
+                <p key={i} className="agent-warning">
+                  ⚠ {w}
+                </p>
+              ))}
+            </div>
+          )}
+
+          <div className="agent-table-wrap">
+            <table className="agent-review-table">
+              <thead>
+                <tr>
+                  <th>Ref.</th>
+                  <th>Nome</th>
+                  <th style={{ textAlign: "right" }}>Qtd</th>
+                  <th style={{ textAlign: "right" }}>Custo unit.</th>
+                  <th style={{ textAlign: "right" }}>PVP c/IVA</th>
+                  <th>Subcategoria</th>
+                  <th>Cor</th>
+                  <th>Tam</th>
+                  <th style={{ textAlign: "right" }}>Total</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {editLines.map((line, idx) => (
+                  <tr key={idx}>
+                    <td>
+                      <input
+                        className="agent-cell-input"
+                        value={line.reference}
+                        onChange={(e) => updateLine(idx, "reference", e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="agent-cell-input agent-cell-name"
+                        value={line.name}
+                        onChange={(e) => updateLine(idx, "name", e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="agent-cell-input agent-cell-num"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={line.qty}
+                        onChange={(e) => updateLine(idx, "qty", Number(e.target.value))}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="agent-cell-input agent-cell-num"
+                        type="number"
+                        step={0.01}
+                        value={line.unit_cost}
+                        onChange={(e) => updateLine(idx, "unit_cost", Number(e.target.value))}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="agent-cell-input agent-cell-num"
+                        type="number"
+                        step={0.01}
+                        value={line.pvp_with_vat}
+                        onChange={(e) => updateLine(idx, "pvp_with_vat", Number(e.target.value))}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="agent-cell-input"
+                        value={line.subcategory_name}
+                        onChange={(e) => updateLine(idx, "subcategory_name", e.target.value)}
+                      />
+                    </td>
+                    <td className="agent-cell-ro">{line.color || "—"}</td>
+                    <td className="agent-cell-ro">{line.size || "—"}</td>
+                    <td className="agent-cell-ro" style={{ textAlign: "right" }}>
+                      {(line.qty * line.unit_cost).toFixed(2)}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="agent-remove-btn"
+                        title="Remover linha"
+                        onClick={() => removeLine(idx)}
+                        disabled={applying}
+                      >
+                        ×
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={8} style={{ textAlign: "right", fontWeight: 600, paddingTop: "0.5rem" }}>
+                    Subtotal (linhas):
+                  </td>
+                  <td style={{ textAlign: "right", fontWeight: 600, paddingTop: "0.5rem" }}>
+                    {editLines.reduce((s, l) => s + l.qty * l.unit_cost, 0).toFixed(2)}
+                  </td>
+                  <td />
+                </tr>
+                <tr>
+                  <td colSpan={8} style={{ textAlign: "right", color: "var(--muted)", fontSize: "0.82rem" }}>
+                    Subtotal fatura (Claude):
+                  </td>
+                  <td
+                    style={{
+                      textAlign: "right",
+                      color: extracted.reconciliation.matches_invoice_total
+                        ? "var(--muted)"
+                        : "var(--danger)",
+                      fontSize: "0.82rem",
+                    }}
+                  >
+                    {extracted.header.subtotal.toFixed(2)}
+                    {!extracted.reconciliation.matches_invoice_total && " ⚠"}
+                  </td>
+                  <td />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <p className="muted" style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}>
+            {editLines.length} linha(s) · edita diretamente na tabela antes de aplicar
+          </p>
+        </div>
+      )}
+
+      {/* ── Card 3: Apply progress ── */}
+      {(applyLog.length > 0 || applying) && (
+        <div className="card">
+          <h2 style={{ fontSize: "1.05rem", marginBottom: "0.75rem" }}>
+            {applyDone
+              ? applyError
+                ? "Aplicação concluída com erros"
+                : "Aplicação concluída"
+              : "A aplicar no Moloni…"}
+          </h2>
+
+          {applyError && <p className="error">{applyError}</p>}
+
+          <div className="agent-apply-log">
+            {applyLog.map((ev, i) => (
+              <ApplyEventRow key={i} event={ev} />
+            ))}
+            {applying && !applyDone && (
+              <div className="agent-apply-row agent-apply-pending">
+                <Spinner /> <span>A processar…</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function PhaseBanner({
-  phase,
-  detail,
-}: {
-  phase: "idle" | "uploading" | "sending" | "waiting" | "streaming" | "tool";
-  detail: string;
-}) {
-  if (phase === "idle") return null;
-  const label =
-    phase === "uploading"
-      ? "A carregar PDF…"
-      : phase === "sending"
-        ? "A enviar…"
-        : phase === "tool"
-          ? "Tool em execução"
-          : phase === "streaming"
-            ? "A escrever resposta…"
-            : "A processar…";
-  return (
-    <div className="agent-phase">
-      <Spinner />
-      <span className="agent-phase-label">{label}</span>
-      {detail ? <span className="agent-phase-detail muted">{detail}</span> : null}
-    </div>
-  );
-}
-
-function Spinner() {
-  return <span className="agent-spinner" aria-hidden="true" />;
-}
-
-// ── Subcomponents ──
+// ── Dropzone ─────────────────────────────────────────────────────────────────
 
 function Dropzone(props: {
   hasPdf: boolean;
   filename: string | null;
   uploading: boolean;
+  disabled: boolean;
   onFile: (f: File) => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
+
   const handleFiles = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const f = Array.from(files).find((x) => x.type === "application/pdf");
+    const f = files && Array.from(files).find((x) => x.type === "application/pdf");
     if (f) props.onFile(f);
   };
+
   return (
     <div
-      className={`agent-dropzone${dragOver ? " is-dragover" : ""}`}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragOver(true);
-      }}
+      className={`agent-dropzone agent-dropzone-inline${dragOver ? " is-dragover" : ""}${props.disabled ? " is-disabled" : ""}`}
+      onDragOver={(e) => { e.preventDefault(); if (!props.disabled) setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragOver(false);
-        handleFiles(e.dataTransfer.files);
-      }}
-      onClick={() => inputRef.current?.click()}
+      onDrop={(e) => { e.preventDefault(); setDragOver(false); if (!props.disabled) handleFiles(e.dataTransfer.files); }}
+      onClick={() => !props.disabled && inputRef.current?.click()}
       role="button"
-      tabIndex={0}
+      tabIndex={props.disabled ? -1 : 0}
     >
       <input
         ref={inputRef}
@@ -555,74 +473,90 @@ function Dropzone(props: {
         onChange={(e) => handleFiles(e.target.files)}
       />
       {props.uploading ? (
-        <p className="muted">A carregar…</p>
+        <span className="muted"><Spinner /> A carregar…</span>
       ) : props.hasPdf ? (
-        <>
-          <p style={{ margin: 0 }}>
-            <strong>📄 {props.filename || "fatura.pdf"}</strong>
-          </p>
-          <p className="muted" style={{ margin: "0.25rem 0 0" }}>
-            Clica ou larga outro PDF para substituir (a conversa será reiniciada).
-          </p>
-        </>
+        <span>📄 <strong>{props.filename || "fatura.pdf"}</strong> <span className="muted">(clica para substituir)</span></span>
       ) : (
-        <>
-          <p style={{ margin: 0, fontSize: "1rem" }}>📥 Larga aqui o PDF da fatura</p>
-          <p className="muted" style={{ margin: "0.25rem 0 0" }}>
-            ou clica para escolher um ficheiro (.pdf, máx. 25 MB)
-          </p>
-        </>
+        <span>📥 Larga ou clica para carregar o PDF da fatura</span>
       )}
     </div>
   );
 }
 
-function ChatItemView({ item }: { item: ChatItem }) {
-  if (item.kind === "user") {
-    return (
-      <div className="agent-msg agent-msg-user">
-        <div className="agent-msg-role">Tu</div>
-        <div className="agent-msg-body">{item.text}</div>
-      </div>
-    );
-  }
-  if (item.kind === "assistant") {
-    return (
-      <div className={`agent-msg agent-msg-assistant${item.streaming ? " is-streaming" : ""}`}>
-        <div className="agent-msg-role">Agente</div>
-        <div className="agent-msg-body" style={{ whiteSpace: "pre-wrap" }}>
-          {item.text}
-          {item.streaming ? <span className="agent-cursor">▍</span> : null}
+// ── Apply event row ───────────────────────────────────────────────────────────
+
+function ApplyEventRow({ event }: { event: ApplyEvent }) {
+  switch (event.type) {
+    case "started":
+      return <div className="agent-apply-row">🚀 Início da aplicação</div>;
+    case "subcategory_lookup":
+      return (
+        <div className="agent-apply-row">
+          🗂 Subcategorias a criar:{" "}
+          {event.needs_creation.length === 0
+            ? "nenhuma"
+            : event.needs_creation.join(", ")}
         </div>
-      </div>
-    );
-  }
-  // tool
-  return (
-    <details className={`agent-tool${item.result?.isError ? " is-error" : ""}`}>
-      <summary>
-        <code>{item.name}</code>
-        <span className="muted" style={{ marginLeft: "0.5rem" }}>
-          {item.server ? `${item.server} · ` : ""}
-          {item.result ? (item.result.isError ? "erro" : "ok") : "a executar…"}
-        </span>
-      </summary>
-      <div className="agent-tool-body">
-        <div>
-          <div className="muted" style={{ fontSize: "0.7rem", textTransform: "uppercase" }}>
-            input
-          </div>
-          <pre>{JSON.stringify(item.input, null, 2)}</pre>
+      );
+    case "subcategory_created":
+      return (
+        <div className="agent-apply-row agent-apply-ok">
+          ✅ Subcategoria criada: <strong>{event.name}</strong> (id {event.category_id})
         </div>
-        {item.result ? (
-          <div>
-            <div className="muted" style={{ fontSize: "0.7rem", textTransform: "uppercase" }}>
-              {item.result.isError ? "erro" : "resultado"}
-            </div>
-            <pre>{item.result.text}</pre>
-          </div>
-        ) : null}
-      </div>
-    </details>
-  );
+      );
+    case "products_indexing":
+      return (
+        <div className="agent-apply-row">
+          🔍 Produtos indexados no Moloni: {event.total_existing}
+        </div>
+      );
+    case "line_matched":
+      return (
+        <div className="agent-apply-row agent-apply-ok">
+          ✓ <code>{event.reference}</code> → produto existente #{event.product_id}
+        </div>
+      );
+    case "line_creating":
+      return (
+        <div className="agent-apply-row">
+          ＋ <code>{event.reference}</code> → a criar produto…
+        </div>
+      );
+    case "line_created":
+      return (
+        <div className="agent-apply-row agent-apply-ok">
+          ✅ <code>{event.reference}</code> → produto criado #{event.product_id}
+        </div>
+      );
+    case "line_error":
+      return (
+        <div className="agent-apply-row agent-apply-err">
+          ❌ <code>{event.reference}</code>: {event.message}
+        </div>
+      );
+    case "invoice_creating":
+      return <div className="agent-apply-row">📄 A criar fatura de fornecedor…</div>;
+    case "invoice_created":
+      return (
+        <div className="agent-apply-row agent-apply-ok" style={{ fontWeight: 600 }}>
+          🎉 Fatura criada no Moloni — documento #{event.document_id}
+        </div>
+      );
+    case "invoice_error":
+      return (
+        <div className="agent-apply-row agent-apply-err">
+          ❌ Erro na fatura: {event.message}
+        </div>
+      );
+    case "done":
+      return <div className="agent-apply-row agent-apply-done">— Concluído —</div>;
+    default:
+      return null;
+  }
+}
+
+// ── Spinner ───────────────────────────────────────────────────────────────────
+
+function Spinner() {
+  return <span className="agent-spinner" aria-hidden="true" />;
 }
