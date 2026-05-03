@@ -123,6 +123,33 @@ def load_supplier_rules(slug: str) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
+_SLUG_RE = __import__("re").compile(r"^[a-z0-9_-]+$")
+
+
+def _validate_slug(slug: str) -> str:
+    """Return sanitised slug or raise ValueError."""
+    if not slug or not _SLUG_RE.match(slug):
+        raise ValueError(f"Invalid slug {slug!r}: only lowercase letters, digits, _ and - allowed")
+    return slug
+
+
+def save_supplier_rules(slug: str, content: str) -> None:
+    """Write content to {slug}.md, creating the file if necessary."""
+    _validate_slug(slug)
+    _SUPPLIERS_DIR.mkdir(parents=True, exist_ok=True)
+    (_SUPPLIERS_DIR / f"{slug}.md").write_text(content, encoding="utf-8")
+
+
+def delete_supplier(slug: str) -> bool:
+    """Delete {slug}.md. Returns True if deleted, False if it didn't exist."""
+    _validate_slug(slug)
+    path = _SUPPLIERS_DIR / f"{slug}.md"
+    if path.is_file():
+        path.unlink()
+        return True
+    return False
+
+
 def build_system_blocks(supplier_slug: str) -> list[dict]:
     """Anthropic system as a list so each section can be cached independently.
     Cache_control on the base prompt + supplier rules — both are stable per supplier."""

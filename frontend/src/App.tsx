@@ -2,6 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
 import { AuthError, authMe } from "./api";
 import AgentPage from "./pages/AgentPage";
+import AgentSupplierEditPage from "./pages/AgentSupplierEditPage";
+import AgentSuppliersPage from "./pages/AgentSuppliersPage";
 import CategoriesPage from "./pages/CategoriesPage";
 import InvoiceDetailPage from "./pages/InvoiceDetailPage";
 import InvoicesPage from "./pages/InvoicesPage";
@@ -63,6 +65,8 @@ export default function App() {
         <Route path="/suppliers/:supplierId" element={<SupplierEditPage />} />
         <Route path="/categories" element={<CategoriesPage />} />
         <Route path="/agent" element={<AgentPage />} />
+        <Route path="/agent/suppliers" element={<AgentSuppliersPage />} />
+        <Route path="/agent/suppliers/:slug" element={<AgentSupplierEditPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

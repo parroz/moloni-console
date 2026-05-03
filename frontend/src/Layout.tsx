@@ -23,6 +23,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <NavLink to="/agent" className={({ isActive }) => (isActive ? "active" : "")}>
           Agente
         </NavLink>
+        <NavLink to="/agent/suppliers" className={({ isActive }) => (isActive ? "active" : "")}>
+          Fornecedores IA
+        </NavLink>
         <span style={{ flex: 1 }} />
         <button
           type="button"

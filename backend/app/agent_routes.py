@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.agent.applier import apply_invoice
-from app.agent.prompts import list_suppliers
+from app.agent.prompts import delete_supplier, list_suppliers, load_supplier_rules, save_supplier_rules
 from app.agent.runner import ExtractionError, extract_invoice
 from app.agent.schema import ExtractedHeader, ExtractedInvoice, ExtractedLine
 from app.agent.state import store
@@ -62,6 +62,41 @@ def _sse(payload: dict[str, Any]) -> bytes:
 async def get_suppliers(request: Request) -> list[dict[str, str]]:
     require_auth(request)
     return list_suppliers()
+
+
+@router.get("/suppliers/{slug}/rules")
+async def get_supplier_rules(request: Request, slug: str) -> dict[str, str]:
+    require_auth(request)
+    content = load_supplier_rules(slug)
+    if content is None:
+        raise HTTPException(404, f"Supplier {slug!r} not found")
+    return {"slug": slug, "content": content}
+
+
+class SupplierRulesBody(BaseModel):
+    content: str
+
+
+@router.put("/suppliers/{slug}/rules")
+async def put_supplier_rules(request: Request, slug: str, body: SupplierRulesBody) -> dict[str, str]:
+    require_auth(request)
+    try:
+        save_supplier_rules(slug, body.content)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"slug": slug}
+
+
+@router.delete("/suppliers/{slug}")
+async def delete_supplier_route(request: Request, slug: str) -> dict[str, bool]:
+    require_auth(request)
+    try:
+        found = delete_supplier(slug)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if not found:
+        raise HTTPException(404, f"Supplier {slug!r} not found")
+    return {"ok": True}
 
 
 # ── session CRUD ────────────────────────────────────────────────────────────────
