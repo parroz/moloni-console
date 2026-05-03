@@ -63,7 +63,6 @@ export type ApplyEvent =
   | { type: "started" }
   | { type: "subcategory_lookup"; needs_creation: string[] }
   | { type: "subcategory_created"; name: string; category_id: number }
-  | { type: "products_indexing"; total_existing: number }
   | { type: "line_matched"; reference: string; product_id: number }
   | { type: "line_creating"; reference: string }
   | { type: "line_created"; reference: string; product_id: number }

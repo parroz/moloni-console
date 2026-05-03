@@ -21,68 +21,33 @@ log = logging.getLogger("agent.applier")
 _INTER_CALL_SLEEP = 0.1
 
 
-async def _list_products_under(
-    client: MoloniClient, company_id: int, root_category_id: int
-) -> list[dict[str, Any]]:
-    """All products under a category and every descendant subcategory.
-    BFS so we visit each subcategory once. Bounded depth+count to avoid runaway."""
-    seen_cats: set[int] = set()
-    seen_pids: set[int] = set()
-    products: list[dict[str, Any]] = []
-    queue: list[int] = [int(root_category_id)]
-    visited = 0
-    MAX_CATS = 100
-    MAX_PRODUCTS = 10_000
+async def _find_product_by_reference(
+    client: MoloniClient, company_id: int, reference: str
+) -> dict[str, Any] | None:
+    """Look up a single product by exact reference via products/getAll with reference filter.
+    Returns the first exact-match hit, or None if not found."""
+    try:
+        results = await client.post(
+            "products/getAll",
+            {
+                "company_id": company_id,
+                "reference": reference,
+                "qty": 10,
+                "offset": 0,
+            },
+        )
+    except MoloniAPIError as e:
+        log.warning("applier: products/getAll(ref=%s) failed: %s", reference, e)
+        return None
 
-    while queue and visited < MAX_CATS and len(products) < MAX_PRODUCTS:
-        cid = queue.pop(0)
-        if cid in seen_cats:
-            continue
-        seen_cats.add(cid)
-        visited += 1
+    if not isinstance(results, list):
+        return None
 
-        # Children of this category (so we recurse)
-        try:
-            children = await fetch_categories_level(client, company_id, cid)
-        except MoloniAPIError as e:
-            log.warning("applier: fetch_categories_level(%s) failed: %s", cid, e)
-            children = []
-        for c in children or []:
-            try:
-                child_id = int(c["category_id"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if child_id not in seen_cats:
-                queue.append(child_id)
-
-        # Products directly in this category
-        try:
-            page = await client.post_all_pages(
-                "products/getAll",
-                {"company_id": company_id, "category_id": cid},
-            )
-        except MoloniAPIError as e:
-            log.warning("applier: products/getAll(%s) failed: %s", cid, e)
-            continue
-        for p in page or []:
-            try:
-                pid = int(p["product_id"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if pid in seen_pids:
-                continue
-            seen_pids.add(pid)
-            products.append(p)
-            if len(products) >= MAX_PRODUCTS:
-                break
-
-    log.info(
-        "applier: indexed %d products across %d categories under root=%s",
-        len(products),
-        visited,
-        root_category_id,
-    )
-    return products
+    ref_upper = reference.strip().upper()
+    for p in results:
+        if str(p.get("reference", "")).strip().upper() == ref_upper:
+            return p
+    return None
 
 
 def _supplier_parent_category_id(supplier_slug: str) -> int:
@@ -265,17 +230,11 @@ async def apply_invoice(
             yield {"type": "done"}
             return
 
-    # ── Step 2: index every product under the supplier's parent (recursive).
-    existing = await _list_products_under(client, company_id, parent_cat)
-    yield {"type": "products_indexing", "total_existing": len(existing)}
-
-    by_ref = {str(p.get("reference", "")).strip().upper(): p for p in existing if p.get("reference")}
-
-    # ── Step 3: per line — match or create. Sequential.
+    # ── Step 2 & 3: per line — look up by reference, create if missing. Sequential.
     line_product_ids: dict[str, int] = {}
     for line in extracted.lines:
-        ref_key = line.reference.strip().upper()
-        match = by_ref.get(ref_key)
+        match = await _find_product_by_reference(client, company_id, line.reference)
+        await asyncio.sleep(_INTER_CALL_SLEEP)
 
         if match:
             pid = int(match["product_id"])

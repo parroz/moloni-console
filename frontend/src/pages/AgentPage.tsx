@@ -504,12 +504,6 @@ function ApplyEventRow({ event }: { event: ApplyEvent }) {
           ✅ Subcategoria criada: <strong>{event.name}</strong> (id {event.category_id})
         </div>
       );
-    case "products_indexing":
-      return (
-        <div className="agent-apply-row">
-          🔍 Produtos indexados no Moloni: {event.total_existing}
-        </div>
-      );
     case "line_matched":
       return (
         <div className="agent-apply-row agent-apply-ok">
