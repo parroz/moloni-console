@@ -434,35 +434,78 @@ table.invoice-lines-table .invoice-input-ean {
 
 /* ── Agent page ── */
 
-.agent-dropzone {
-  border: 2px dashed var(--border);
-  border-radius: 12px;
-  padding: 1.5rem;
-  margin-bottom: 1rem;
-  text-align: center;
-  cursor: pointer;
-  background: var(--panel);
-  transition: border-color 120ms ease, background 120ms ease;
+.agent-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
-.agent-dropzone:hover,
-.agent-dropzone.is-dragover {
+/* Upload row: supplier select + dropzone + action button in one line */
+.agent-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.agent-upload-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+.agent-upload-label select {
+  font-size: 0.88rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* Inline dropzone (smaller, fits in a row) */
+.agent-dropzone-inline {
+  flex: 1;
+  min-width: 200px;
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  font-size: 0.88rem;
+  background: var(--panel);
+  transition: border-color 120ms ease, background 120ms ease;
+  user-select: none;
+}
+
+.agent-dropzone-inline:hover,
+.agent-dropzone-inline.is-dragover {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
 }
 
-.agent-thread {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+.agent-dropzone-inline.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
+.agent-extracted-badge {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--success, #2e7d32);
+  white-space: nowrap;
+}
+
+/* Phase banner (extraction in progress) */
 .agent-phase {
   display: inline-flex;
   align-items: center;
   gap: 0.6rem;
   padding: 0.5rem 0.85rem;
-  margin-bottom: 0.75rem;
   background: color-mix(in srgb, var(--accent) 10%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   border-radius: 999px;
@@ -478,6 +521,7 @@ table.invoice-lines-table .invoice-input-ean {
   font-style: italic;
 }
 
+/* Spinner */
 .agent-spinner {
   width: 12px;
   height: 12px;
@@ -487,102 +531,176 @@ table.invoice-lines-table .invoice-input-ean {
   display: inline-block;
   animation: agent-spin 0.8s linear infinite;
   vertical-align: -2px;
+  margin-right: 0.3rem;
 }
 
 @keyframes agent-spin {
   to { transform: rotate(360deg); }
 }
 
-.agent-msg {
+/* Review card header (title + apply button side by side) */
+.agent-review-header {
   display: flex;
-  gap: 0.6rem;
   align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
 }
 
-.agent-msg-role {
-  flex: 0 0 4rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding-top: 0.15rem;
+/* Extraction warnings */
+.agent-warnings {
+  margin-bottom: 0.75rem;
+}
+.agent-warning {
+  margin: 0.2rem 0;
+  padding: 0.4rem 0.7rem;
+  background: color-mix(in srgb, #f59e0b 12%, var(--panel));
+  border-left: 3px solid #f59e0b;
+  border-radius: 0 6px 6px 0;
+  font-size: 0.83rem;
 }
 
-.agent-msg-body {
-  flex: 1;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.6rem 0.85rem;
-  font-size: 0.92rem;
-  line-height: 1.5;
-}
-
-.agent-msg-user .agent-msg-body {
-  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-}
-
-.agent-msg-assistant .agent-msg-body {
-  background: var(--panel);
-}
-
-.agent-cursor {
-  display: inline-block;
-  margin-left: 1px;
-  color: var(--accent);
-  animation: agent-blink 1s steps(1) infinite;
-}
-
-@keyframes agent-blink {
-  50% { opacity: 0; }
-}
-
-.agent-tool {
+/* Review table */
+.agent-table-wrap {
+  overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 4%, var(--panel));
-  font-size: 0.82rem;
-  margin-left: 4.6rem;
 }
 
-.agent-tool.is-error {
-  border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
-  background: color-mix(in srgb, var(--danger) 8%, var(--panel));
+.agent-review-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.83rem;
 }
 
-.agent-tool > summary {
-  cursor: pointer;
-  padding: 0.45rem 0.7rem;
-  list-style-position: outside;
-  user-select: none;
+.agent-review-table th {
+  padding: 0.45rem 0.55rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
-.agent-tool > summary code {
-  font-family: ui-monospace, Menlo, monospace;
-  font-size: 0.78rem;
-  color: var(--accent);
+.agent-review-table td {
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
 }
 
-.agent-tool-body {
-  padding: 0 0.7rem 0.55rem 0.7rem;
-  display: grid;
-  gap: 0.55rem;
+.agent-review-table tfoot td {
+  border-bottom: none;
+  border-top: 1px solid var(--border);
 }
 
-.agent-tool-body pre {
-  margin: 0.2rem 0 0;
-  padding: 0.5rem 0.65rem;
+.agent-review-table tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg));
+}
+
+.agent-cell-input {
+  width: 100%;
+  min-width: 5rem;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.83rem;
+  font-family: inherit;
+  transition: border-color 100ms;
+}
+
+.agent-cell-input:hover {
+  border-color: var(--border);
+}
+
+.agent-cell-input:focus {
+  outline: none;
+  border-color: var(--accent);
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 0.74rem;
+}
+
+.agent-cell-input.agent-cell-name {
+  min-width: 10rem;
+}
+
+.agent-cell-input.agent-cell-num {
+  min-width: 4.5rem;
+  text-align: right;
+}
+
+.agent-cell-ro {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.agent-remove-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  transition: color 100ms, background 100ms;
+}
+
+.agent-remove-btn:hover {
+  color: var(--danger, #c62828);
+  background: color-mix(in srgb, var(--danger, #c62828) 10%, transparent);
+}
+
+/* Apply progress log */
+.agent-apply-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+
+.agent-apply-row {
+  padding: 0.3rem 0.5rem;
+  border-radius: 5px;
+  line-height: 1.4;
+}
+
+.agent-apply-row code {
   font-family: ui-monospace, Menlo, monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 18rem;
-  overflow: auto;
+  font-size: 0.8rem;
+  background: var(--bg);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+
+.agent-apply-ok {
+  color: var(--success, #2e7d32);
+}
+
+.agent-apply-err {
+  color: var(--danger, #c62828);
+  background: color-mix(in srgb, var(--danger, #c62828) 6%, transparent);
+}
+
+.agent-apply-done {
+  font-weight: 600;
+  color: var(--muted);
+  text-align: center;
+  padding-top: 0.5rem;
+}
+
+.agent-apply-pending {
+  color: var(--muted);
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 @media print {

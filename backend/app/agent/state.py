@@ -8,19 +8,20 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent.schema import ExtractedInvoice
+
 
 @dataclass
 class AgentSession:
     session_id: str
-    supplier_slug: str = "auto"
-    test_mode: bool = True  # default safe: nothing is written until user toggles off
+    supplier_slug: str = "american_vintage"
     pdf_bytes: bytes | None = None
     pdf_filename: str | None = None
-    # Anthropic message format: list of {role, content[]}.
-    messages: list[dict[str, Any]] = field(default_factory=list)
+    extracted: ExtractedInvoice | None = None
+    apply_log: list[dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
-    # One concurrent run per session (lock prevents user from sending two messages at once).
+    # Lock prevents two extracts or two applies from running on the same session.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -48,7 +49,6 @@ class SessionStore:
         self._sessions.pop(session_id, None)
 
     def gc(self) -> int:
-        """Drop sessions older than TTL. Returns number removed."""
         cutoff = time.time() - self._ttl
         stale = [sid for sid, s in self._sessions.items() if s.last_used < cutoff]
         for sid in stale:
@@ -56,5 +56,4 @@ class SessionStore:
         return len(stale)
 
 
-# Singleton store
 store = SessionStore()
