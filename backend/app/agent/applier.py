@@ -21,33 +21,26 @@ log = logging.getLogger("agent.applier")
 _INTER_CALL_SLEEP = 0.1
 
 
-async def _find_product_by_reference(
-    client: MoloniClient, company_id: int, reference: str
-) -> dict[str, Any] | None:
-    """Look up a single product by exact reference via products/getAll with reference filter.
-    Returns the first exact-match hit, or None if not found."""
+async def _fetch_products_in_category(
+    client: MoloniClient, company_id: int, category_id: int
+) -> dict[str, Any]:
+    """Fetch all products in a single category; return a ref_upper→product dict.
+    Moloni's products/getAll filters reliably by category_id."""
     try:
-        results = await client.post(
+        results = await client.post_all_pages(
             "products/getAll",
-            {
-                "company_id": company_id,
-                "reference": reference,
-                "qty": 10,
-                "offset": 0,
-            },
+            {"company_id": company_id, "category_id": category_id},
         )
     except MoloniAPIError as e:
-        log.warning("applier: products/getAll(ref=%s) failed: %s", reference, e)
-        return None
-
-    if not isinstance(results, list):
-        return None
-
-    ref_upper = reference.strip().upper()
-    for p in results:
-        if str(p.get("reference", "")).strip().upper() == ref_upper:
-            return p
-    return None
+        log.warning("applier: products/getAll(cat=%s) failed: %s", category_id, e)
+        return {}
+    by_ref: dict[str, Any] = {}
+    for p in results or []:
+        ref = str(p.get("reference", "")).strip().upper()
+        if ref:
+            by_ref[ref] = p
+    log.info("applier: fetched %d products from category %s", len(by_ref), category_id)
+    return by_ref
 
 
 def _supplier_parent_category_id(supplier_slug: str) -> int:
@@ -230,11 +223,21 @@ async def apply_invoice(
             yield {"type": "done"}
             return
 
-    # ── Step 2 & 3: per line — look up by reference, create if missing. Sequential.
+    # ── Step 2 & 3: per line — look up by reference (lazy per-subcategory cache), create if missing.
+    # Moloni's products/getAll filters reliably by category_id but not by reference.
+    # We fetch each subcategory once on demand and cache the results for the run.
+    cat_cache: dict[int, dict[str, Any]] = {}  # category_id → {ref_upper: product}
     line_product_ids: dict[str, int] = {}
+
     for line in extracted.lines:
-        match = await _find_product_by_reference(client, company_id, line.reference)
-        await asyncio.sleep(_INTER_CALL_SLEEP)
+        ref_key = line.reference.strip().upper()
+        cat_id = by_name.get(line.subcategory_name.strip().upper(), parent_cat)
+
+        if cat_id not in cat_cache:
+            cat_cache[cat_id] = await _fetch_products_in_category(client, company_id, cat_id)
+            await asyncio.sleep(_INTER_CALL_SLEEP)
+
+        match = cat_cache[cat_id].get(ref_key)
 
         if match:
             pid = int(match["product_id"])
@@ -262,6 +265,8 @@ async def apply_invoice(
                 yield {"type": "line_error", "reference": line.reference, "message": "insert returned no product_id"}
                 continue
             line_product_ids[line.reference] = new_pid
+            # Update cache so a duplicate reference later in the same invoice hits the match path
+            cat_cache.setdefault(cat_id, {})[ref_key] = res
             yield {"type": "line_created", "reference": line.reference, "product_id": new_pid}
             await asyncio.sleep(_INTER_CALL_SLEEP)
         except MoloniAPIError as e:
