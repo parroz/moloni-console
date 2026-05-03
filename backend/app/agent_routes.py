@@ -28,7 +28,6 @@ from app.agent.schema import ExtractedHeader, ExtractedInvoice, ExtractedLine
 from app.agent.state import store
 from app.config import Settings, get_settings
 from app.deps import require_auth
-from app.moloni_client import MoloniClient
 
 log = logging.getLogger("agent.routes")
 
@@ -227,6 +226,7 @@ async def run_apply(
         raise HTTPException(400, "No extracted data. Run /extract (and optionally /data) first.")
 
     extracted_snapshot = s.extracted  # capture to avoid mid-stream mutation
+    client = request.app.state.moloni  # singleton from lifespan
 
     async def event_stream() -> AsyncIterator[bytes]:
         if s.lock.locked():
@@ -237,10 +237,9 @@ async def run_apply(
         async with s.lock:
             s.apply_log = []
             try:
-                async with MoloniClient(settings) as client:
-                    async for event in apply_invoice(extracted_snapshot, client, settings):
-                        s.apply_log.append(event)
-                        yield _sse(event)
+                async for event in apply_invoice(extracted_snapshot, client, settings):
+                    s.apply_log.append(event)
+                    yield _sse(event)
             except Exception as e:  # noqa: BLE001
                 log.exception("apply_invoice stream error: %s", e)
                 err = {"type": "invoice_error", "message": f"Stream crashed: {type(e).__name__}: {e}"}
