@@ -96,12 +96,17 @@ async def extract_invoice(
     t0 = time.monotonic()
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-    msg = await client.messages.create(
+    # Stream the response: at large max_tokens the SDK refuses non-streaming
+    # calls whose worst-case runtime would exceed the 10-minute server cap.
+    # get_final_message() returns the same assembled Message we'd get back
+    # from .create(), so the parsing code below is unchanged.
+    async with client.messages.stream(
         model=settings.anthropic_model,
         max_tokens=settings.anthropic_max_tokens,
         system=system_blocks,
         messages=[user_msg],
-    )
+    ) as stream:
+        msg = await stream.get_final_message()
 
     elapsed = time.monotonic() - t0
     raw_text = ""
