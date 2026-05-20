@@ -17,6 +17,7 @@ export type ExtractedHeader = {
   subtotal: number;
   tax_total: number;
   grand_total: number;
+  invoice_discount_pct: number;
 };
 
 export type ExtractedLine = {
@@ -30,6 +31,7 @@ export type ExtractedLine = {
   subcategory_name: string;
   color: string;
   size: string;
+  discount_pct: number;
 };
 
 export type Reconciliation = {

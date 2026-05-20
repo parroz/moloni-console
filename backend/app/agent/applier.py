@@ -93,7 +93,29 @@ def _build_supplier_invoice_insert_body(
     line_product_ids: dict[str, int],
     defaults: dict[str, Any],
 ) -> dict[str, Any]:
-    """Body for supplierInvoices/insert from the user-reviewed JSON + resolved product_ids."""
+    """Body for supplierInvoices/insert from the user-reviewed JSON + resolved product_ids.
+
+    Taxed vs exempt is decided by `exemption_reason` in the supplier config:
+    non-empty → VAT-exempt supplier (RAINS, American Vintage), no taxes on
+    lines; empty → domestic supplier (Andre Costa / OSKLEN), apply tax_id at
+    tax_value % on each line. Discounts (per-line and header-level) come
+    straight from the extracted invoice.
+    """
+    exemption_reason = str(defaults.get("exemption_reason") or "").strip()
+    if exemption_reason:
+        line_taxes: list[dict[str, Any]] = []
+        line_exemption = exemption_reason
+    else:
+        line_taxes = [
+            {
+                "tax_id": int(defaults["tax_id"]),
+                "value": float(defaults.get("tax_value", 23)),
+                "order": 1,
+                "cumulative": 0,
+            }
+        ]
+        line_exemption = ""
+
     products: list[dict[str, Any]] = []
     for i, line in enumerate(extracted.lines):
         pid = line_product_ids.get(line.reference)
@@ -106,12 +128,12 @@ def _build_supplier_invoice_insert_body(
                 "summary": line.summary or line.name,
                 "qty": float(line.qty),
                 "price": float(line.unit_cost),
-                "discount": 0,
+                "discount": float(line.discount_pct or 0),
                 "deduction_id": 0,
                 "order": i,
-                "exemption_reason": defaults.get("exemption_reason", "M10"),
+                "exemption_reason": line_exemption,
                 "warehouse_id": 0,
-                "taxes": [],
+                "taxes": list(line_taxes),
             }
         )
 
@@ -124,7 +146,7 @@ def _build_supplier_invoice_insert_body(
         "supplier_id": int(defaults["supplier_id"]),
         "our_reference": "",
         "your_reference": extracted.header.invoice_number,
-        "financial_discount": 0,
+        "financial_discount": float(extracted.header.invoice_discount_pct or 0),
         "special_discount": 0,
         "notes": "",
         "status": 0,

@@ -26,6 +26,8 @@ export default function AgentPage() {
 
   // Local editable copy of lines (kept in sync from session.extracted)
   const [editLines, setEditLines] = useState<ExtractedLine[]>([]);
+  // Invoice-level discount % (editable; resets to extracted value on new extraction)
+  const [editInvoiceDiscount, setEditInvoiceDiscount] = useState<number>(0);
   const lastExtractedRef = useRef<string | null>(null); // prevent overwriting user edits
 
   // Apply stream state
@@ -60,19 +62,21 @@ export default function AgentPage() {
 
   const session = sessionQ.data ?? null;
 
-  // Sync editLines when a new extraction arrives
+  // Sync editLines + editInvoiceDiscount when a new extraction arrives
   useEffect(() => {
-    const lines = session?.extracted?.lines;
+    const extracted = session?.extracted;
+    const lines = extracted?.lines;
     if (!lines) return;
     const key = JSON.stringify(lines);
     if (key === lastExtractedRef.current) return; // already loaded
     lastExtractedRef.current = key;
     setEditLines(lines.map((l) => ({ ...l })));
+    setEditInvoiceDiscount(extracted?.header?.invoice_discount_pct ?? 0);
     // Reset apply state for a fresh extraction
     setApplyLog([]);
     setApplyDone(false);
     setApplyError(null);
-  }, [session?.extracted?.lines]);
+  }, [session?.extracted]);
 
   // ── create session ──
   const createSessionMut = useMutation({
@@ -137,7 +141,10 @@ export default function AgentPage() {
     try {
       await apiJson(`/agent/sessions/${sessionId}/data`, {
         method: "PATCH",
-        body: JSON.stringify({ lines: editLines }),
+        body: JSON.stringify({
+          header: { invoice_discount_pct: editInvoiceDiscount },
+          lines: editLines,
+        }),
       });
     } catch (e) {
       setApplyError(`Erro ao guardar edições: ${e instanceof Error ? e.message : String(e)}`);
@@ -153,7 +160,7 @@ export default function AgentPage() {
     } catch (e) {
       setApplyError(e instanceof Error ? e.message : String(e));
     }
-  }, [sessionId, applying, editLines, streamApply]);
+  }, [sessionId, applying, editLines, editInvoiceDiscount, streamApply]);
 
   // ── line edits ──
   function updateLine(idx: number, field: keyof ExtractedLine, value: string | number) {
@@ -292,6 +299,7 @@ export default function AgentPage() {
                   <th>Nome</th>
                   <th style={{ textAlign: "right" }}>Qtd</th>
                   <th style={{ textAlign: "right" }}>Custo unit.</th>
+                  <th style={{ textAlign: "right" }}>Desc %</th>
                   <th style={{ textAlign: "right" }}>PVP c/IVA</th>
                   <th>Subcategoria</th>
                   <th>Cor</th>
@@ -301,104 +309,161 @@ export default function AgentPage() {
                 </tr>
               </thead>
               <tbody>
-                {editLines.map((line, idx) => (
-                  <tr key={idx}>
-                    <td>
-                      <input
-                        className="agent-cell-input"
-                        value={line.reference}
-                        onChange={(e) => updateLine(idx, "reference", e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="agent-cell-input agent-cell-name"
-                        value={line.name}
-                        onChange={(e) => updateLine(idx, "name", e.target.value)}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="agent-cell-input agent-cell-num"
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={line.qty}
-                        onChange={(e) => updateLine(idx, "qty", Number(e.target.value))}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="agent-cell-input agent-cell-num"
-                        type="number"
-                        step={0.01}
-                        value={line.unit_cost}
-                        onChange={(e) => updateLine(idx, "unit_cost", Number(e.target.value))}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="agent-cell-input agent-cell-num"
-                        type="number"
-                        step={0.01}
-                        value={line.pvp_with_vat}
-                        onChange={(e) => updateLine(idx, "pvp_with_vat", Number(e.target.value))}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        className="agent-cell-input"
-                        value={line.subcategory_name}
-                        onChange={(e) => updateLine(idx, "subcategory_name", e.target.value)}
-                      />
-                    </td>
-                    <td className="agent-cell-ro">{line.color || "—"}</td>
-                    <td className="agent-cell-ro">{line.size || "—"}</td>
-                    <td className="agent-cell-ro" style={{ textAlign: "right" }}>
-                      {(line.qty * line.unit_cost).toFixed(2)}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="agent-remove-btn"
-                        title="Remover linha"
-                        onClick={() => removeLine(idx)}
-                        disabled={applying}
-                      >
-                        ×
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {editLines.map((line, idx) => {
+                  const lineNet =
+                    line.qty * line.unit_cost * (1 - (line.discount_pct || 0) / 100);
+                  return (
+                    <tr key={idx}>
+                      <td>
+                        <input
+                          className="agent-cell-input"
+                          value={line.reference}
+                          onChange={(e) => updateLine(idx, "reference", e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          className="agent-cell-input agent-cell-name"
+                          value={line.name}
+                          onChange={(e) => updateLine(idx, "name", e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          className="agent-cell-input agent-cell-num"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={line.qty}
+                          onChange={(e) => updateLine(idx, "qty", Number(e.target.value))}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          className="agent-cell-input agent-cell-num"
+                          type="number"
+                          step={0.01}
+                          value={line.unit_cost}
+                          onChange={(e) => updateLine(idx, "unit_cost", Number(e.target.value))}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          className="agent-cell-input agent-cell-num"
+                          type="number"
+                          step={0.01}
+                          min={0}
+                          max={100}
+                          value={line.discount_pct ?? 0}
+                          onChange={(e) => updateLine(idx, "discount_pct", Number(e.target.value))}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          className="agent-cell-input agent-cell-num"
+                          type="number"
+                          step={0.01}
+                          value={line.pvp_with_vat}
+                          onChange={(e) => updateLine(idx, "pvp_with_vat", Number(e.target.value))}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          className="agent-cell-input"
+                          value={line.subcategory_name}
+                          onChange={(e) => updateLine(idx, "subcategory_name", e.target.value)}
+                        />
+                      </td>
+                      <td className="agent-cell-ro">{line.color || "—"}</td>
+                      <td className="agent-cell-ro">{line.size || "—"}</td>
+                      <td className="agent-cell-ro" style={{ textAlign: "right" }}>
+                        {lineNet.toFixed(2)}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="agent-remove-btn"
+                          title="Remover linha"
+                          onClick={() => removeLine(idx)}
+                          disabled={applying}
+                        >
+                          ×
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
               <tfoot>
-                <tr>
-                  <td colSpan={8} style={{ textAlign: "right", fontWeight: 600, paddingTop: "0.5rem" }}>
-                    Subtotal (linhas):
-                  </td>
-                  <td style={{ textAlign: "right", fontWeight: 600, paddingTop: "0.5rem" }}>
-                    {editLines.reduce((s, l) => s + l.qty * l.unit_cost, 0).toFixed(2)}
-                  </td>
-                  <td />
-                </tr>
-                <tr>
-                  <td colSpan={8} style={{ textAlign: "right", color: "var(--muted)", fontSize: "0.82rem" }}>
-                    Subtotal fatura (Claude):
-                  </td>
-                  <td
-                    style={{
-                      textAlign: "right",
-                      color: extracted.reconciliation.matches_invoice_total
-                        ? "var(--muted)"
-                        : "var(--danger)",
-                      fontSize: "0.82rem",
-                    }}
-                  >
-                    {extracted.header.subtotal.toFixed(2)}
-                    {!extracted.reconciliation.matches_invoice_total && " ⚠"}
-                  </td>
-                  <td />
-                </tr>
+                {(() => {
+                  const grossSubtotal = editLines.reduce(
+                    (s, l) => s + l.qty * l.unit_cost,
+                    0,
+                  );
+                  const netAfterLineDisc = editLines.reduce(
+                    (s, l) => s + l.qty * l.unit_cost * (1 - (l.discount_pct || 0) / 100),
+                    0,
+                  );
+                  const netAfterInvoiceDisc =
+                    netAfterLineDisc * (1 - (editInvoiceDiscount || 0) / 100);
+                  return (
+                    <>
+                      <tr>
+                        <td colSpan={9} style={{ textAlign: "right", fontWeight: 600, paddingTop: "0.5rem" }}>
+                          Subtotal (bruto):
+                        </td>
+                        <td style={{ textAlign: "right", fontWeight: 600, paddingTop: "0.5rem" }}>
+                          {grossSubtotal.toFixed(2)}
+                        </td>
+                        <td />
+                      </tr>
+                      <tr>
+                        <td colSpan={9} style={{ textAlign: "right", color: "var(--muted)", fontSize: "0.82rem" }}>
+                          Subtotal fatura (Claude):
+                        </td>
+                        <td
+                          style={{
+                            textAlign: "right",
+                            color: extracted.reconciliation.matches_invoice_total
+                              ? "var(--muted)"
+                              : "var(--danger)",
+                            fontSize: "0.82rem",
+                          }}
+                        >
+                          {extracted.header.subtotal.toFixed(2)}
+                          {!extracted.reconciliation.matches_invoice_total && " ⚠"}
+                        </td>
+                        <td />
+                      </tr>
+                      <tr>
+                        <td colSpan={9} style={{ textAlign: "right", fontSize: "0.85rem" }}>
+                          Desc. fatura %:
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          <input
+                            className="agent-cell-input agent-cell-num"
+                            type="number"
+                            step={0.01}
+                            min={0}
+                            max={100}
+                            value={editInvoiceDiscount}
+                            onChange={(e) => setEditInvoiceDiscount(Number(e.target.value))}
+                          />
+                        </td>
+                        <td />
+                      </tr>
+                      <tr>
+                        <td colSpan={9} style={{ textAlign: "right", fontWeight: 700, paddingTop: "0.35rem", borderTop: "1px dashed var(--border-strong)" }}>
+                          Total estimado (s/ IVA):
+                        </td>
+                        <td style={{ textAlign: "right", fontWeight: 700, paddingTop: "0.35rem", borderTop: "1px dashed var(--border-strong)" }}>
+                          {netAfterInvoiceDisc.toFixed(2)}
+                        </td>
+                        <td />
+                      </tr>
+                    </>
+                  );
+                })()}
               </tfoot>
             </table>
           </div>

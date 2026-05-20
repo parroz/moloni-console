@@ -27,9 +27,16 @@ class ExtractedHeader(BaseModel):
     date: str = Field(..., description="ISO YYYY-MM-DD.")
     expiration_date: str | None = None
     currency: str = "EUR"
-    subtotal: float = 0.0
+    subtotal: float = Field(0.0, description="Pre-discount line total (before invoice-level discount).")
     tax_total: float = 0.0
     grand_total: float = 0.0
+    invoice_discount_pct: float = Field(
+        0.0,
+        description=(
+            "Invoice-level discount percentage applied to the whole document "
+            "(e.g. 'Desc PP 3' → 3.0). Maps to Moloni financial_discount."
+        ),
+    )
 
 
 class ExtractedLine(BaseModel):
@@ -45,6 +52,13 @@ class ExtractedLine(BaseModel):
     subcategory_name: str = Field(..., description="Free-text subcategory name. Backend resolves to category_id.")
     color: str = ""
     size: str = ""
+    discount_pct: float = Field(
+        0.0,
+        description=(
+            "Per-line discount percentage (e.g. the 'DC%' column). "
+            "Maps to Moloni line discount."
+        ),
+    )
 
 
 class Reconciliation(BaseModel):

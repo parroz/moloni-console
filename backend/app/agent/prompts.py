@@ -19,7 +19,10 @@ _SUPPLIERS_DIR = Path(__file__).resolve().parent / "suppliers"
 # is told about it via the system prompt but does NOT mediate these values.
 
 _CONFIG_SECTION_HEADER = "moloni configuration"
-_CONFIG_LINE_RE = re.compile(r"^[\s*\-]*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+?)\s*$")
+# `(.*?)` (not `.+?`) so an explicitly empty value parses as `""` — this lets
+# a supplier override an OPTIONAL_CONFIG_DEFAULTS key with the empty string,
+# e.g. `exemption_reason:` for a domestic (non-exempt) supplier.
+_CONFIG_LINE_RE = re.compile(r"^[\s*\-]*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*?)\s*$")
 _TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 REQUIRED_CONFIG_KEYS: tuple[str, ...] = (
@@ -68,9 +71,10 @@ The JSON must conform to this shape:
     "date": "YYYY-MM-DD",
     "expiration_date": "YYYY-MM-DD" | null,
     "currency": "EUR",
-    "subtotal": <number>,
+    "subtotal": <pre-discount line total>,
     "tax_total": <number>,
-    "grand_total": <number>
+    "grand_total": <final amount due>,
+    "invoice_discount_pct": <number, 0 if no header-level discount>
   },
   "lines": [
     {
@@ -83,7 +87,8 @@ The JSON must conform to this shape:
       "moloni_price_no_vat": <retail net price per supplier rules>,
       "subcategory_name": "<short canonical subcategory string per supplier rules>",
       "color": "<colour or empty>",
-      "size": "<size or empty>"
+      "size": "<size or empty>",
+      "discount_pct": <number, 0 if no per-line discount>
     }
   ],
   "reconciliation": {
@@ -109,11 +114,41 @@ Apply the rules in the supplier-specific block exactly:
 - Pricing — compute `pvp_with_vat` and `moloni_price_no_vat` from the rule's formula.
 - Subcategory name — match the rule's mapping table.
 
+## Discounts
+
+Supplier invoices may carry two independent discounts:
+
+- **Per-line discount** — a column (often labelled `DC%`, `Desc`, `Disc.`) on each
+  line. Emit it as `discount_pct` on that line. Leave it `0` when the cell is
+  empty / dash / zero. The discount is a **percentage**, not an amount.
+- **Header-level discount** — a single percentage applied to the whole invoice
+  (e.g. `Desc PP`, `Pronto Pagamento`, `Special`). Emit it as
+  `header.invoice_discount_pct`. Leave it `0` when absent. Again, a
+  **percentage**, not an amount.
+
+If only the *amount* is printed (e.g. "Descontos: 67,74" with no percentage),
+compute the percentage from the totals: `pct = round(100 * discount_amount /
+pre_discount_total, 2)`.
+
+`header.subtotal` is the **pre-discount** line total (sum of `qty × unit_cost`
+across emitted lines). The discounts are applied on top.
+
 ## Reconciliation
 
-Compute `calculated_subtotal = sum(qty * unit_cost)` across all emitted lines.
-Compare to `header.subtotal`. Tolerate a 0.05 EUR rounding difference.
-- If they match → `matches_invoice_total: true`, `warnings: []`.
+Compute `calculated_subtotal = sum(qty * unit_cost)` across all emitted lines
+(pre-discount). Compare to `header.subtotal`. Tolerate a 0.05 EUR rounding
+difference.
+
+Then sanity-check the full chain when discounts and tax are present:
+
+```
+discounted = calculated_subtotal
+  * (1 - average_line_discount_pct / 100)   # only if any line.discount_pct > 0
+  * (1 - header.invoice_discount_pct / 100)
+expected_grand_total = discounted * (1 + supplier_tax_rate_pct / 100)
+```
+
+- If `header.grand_total` matches → `matches_invoice_total: true`, `warnings: []`.
 - If not → `matches_invoice_total: false`, list the diff and the most likely cause in `warnings`.
 
 ## Failure modes
