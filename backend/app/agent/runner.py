@@ -98,7 +98,7 @@ async def extract_invoice(
 
     msg = await client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=8192,
+        max_tokens=settings.anthropic_max_tokens,
         system=system_blocks,
         messages=[user_msg],
     )
@@ -110,16 +110,26 @@ async def extract_invoice(
         if btype == "text":
             raw_text += getattr(block, "text", "") or ""
 
+    stop_reason = getattr(msg, "stop_reason", None)
     usage = getattr(msg, "usage", None)
+    out_tokens = getattr(usage, "output_tokens", 0) or 0
     log.info(
         "extract: complete in %.1fs stop=%s in=%d out=%d cache_read=%d cache_create=%d",
         elapsed,
-        getattr(msg, "stop_reason", None),
+        stop_reason,
         getattr(usage, "input_tokens", 0) or 0,
-        getattr(usage, "output_tokens", 0) or 0,
+        out_tokens,
         getattr(usage, "cache_read_input_tokens", 0) or 0,
         getattr(usage, "cache_creation_input_tokens", 0) or 0,
     )
+
+    if stop_reason == "max_tokens":
+        raise ExtractionError(
+            f"Model output truncated at the {settings.anthropic_max_tokens}-token cap "
+            f"({out_tokens} tokens emitted). The invoice has more lines than the current "
+            "budget allows. Raise ANTHROPIC_MAX_TOKENS in backend/.env (max 64000 for "
+            "Sonnet 4.5) or split the invoice."
+        )
 
     raw_json = _extract_json_object(raw_text)
     try:

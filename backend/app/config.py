@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # ── Agent (PDF → supplier invoice) ──
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-5"
+    # Hard ceiling on output tokens for the extractor. A single large invoice
+    # (e.g. Yerse with ~100 expanded variants) can produce 25k+ output tokens.
+    # Sonnet 4.5 caps at 64K; 32K is comfortable for any realistic invoice and
+    # leaves a margin to spot anomalies (truncation is surfaced as a clean
+    # error rather than a misleading JSON parse failure).
+    anthropic_max_tokens: int = 32000
 
     @field_validator("moloni_password", mode="after")
     @classmethod
