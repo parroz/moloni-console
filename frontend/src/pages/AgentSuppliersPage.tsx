@@ -11,47 +11,35 @@ export default function AgentSuppliersPage() {
   });
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1rem" }}>
-        <h1 style={{ margin: 0 }}>Fornecedores IA</h1>
-        <Link to="/agent/suppliers/new">
-          <button type="button" className="btn primary">Novo Fornecedor</button>
+    <div className="supplier-rules-page">
+      <div className="supplier-rules-header">
+        <h1>Fornecedores IA</h1>
+        <span className="supplier-rules-stamp">Regras / Markdown</span>
+        <span className="header-spacer" />
+        <Link to="/agent/suppliers/new" className="btn primary">
+          + Novo fornecedor
         </Link>
       </div>
 
-      {q.isLoading && <p>A carregar…</p>}
-      {q.error && <p className="error">{(q.error as Error).message}</p>}
+      {q.isLoading && <p className="muted">A carregar…</p>}
+      {q.error && <p className="status error">{(q.error as Error).message}</p>}
 
       {q.data && (
         q.data.length === 0 ? (
-          <p className="muted">Nenhum fornecedor configurado.</p>
+          <p className="supplier-rules-empty">Nenhum fornecedor configurado</p>
         ) : (
-          <div className="card" style={{ padding: 0 }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Slug</th>
-                  <th>Nome</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {q.data.map((s) => (
-                  <tr key={s.slug}>
-                    <td><code>{s.slug}</code></td>
-                    <td>{s.label}</td>
-                    <td>
-                      <div className="row-actions">
-                        <Link to={`/agent/suppliers/${s.slug}`}>
-                          <button type="button" className="btn">Editar</button>
-                        </Link>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ol className="supplier-rules-list">
+            {q.data.map((s, i) => (
+              <li key={s.slug}>
+                <span className="supplier-rules-index">{String(i + 1).padStart(2, "0")}</span>
+                <span className="supplier-rules-slug">{s.slug}</span>
+                <span className="supplier-rules-name">{s.label}</span>
+                <Link to={`/agent/suppliers/${s.slug}`} className="btn">
+                  Editar →
+                </Link>
+              </li>
+            ))}
+          </ol>
         )
       )}
     </div>

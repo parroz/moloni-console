@@ -39,7 +39,7 @@ export default function LoginPage() {
 
   return (
     <div className="layout">
-      <main style={{ maxWidth: 420 }}>
+      <main className="login-shell">
         <div className="card">
           <h1>Entrar</h1>
           <p className="muted">Palavra-passe da consola (definida em CONSOLE_PASSWORD no servidor).</p>
@@ -47,23 +47,17 @@ export default function LoginPage() {
             <p className="muted">A verificar sessão…</p>
           ) : (
             <form onSubmit={onSubmit}>
-              <label className="muted" style={{ display: "block", marginBottom: "0.35rem" }}>
-                Palavra-passe
+              <label className="login-field">
+                <span className="login-field-label">Palavra-passe</span>
+                <input
+                  className="login-input"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
               </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "0.5rem",
-                  borderRadius: 8,
-                  border: "1px solid var(--border)",
-                  marginBottom: "0.75rem",
-                }}
-                autoComplete="current-password"
-              />
-              {err ? <p className="error">{err}</p> : null}
+              {err ? <p className="status error">{err}</p> : null}
               <button type="submit" className="btn primary" disabled={loading}>
                 {loading ? "A entrar…" : "Entrar"}
               </button>

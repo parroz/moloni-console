@@ -64,58 +64,52 @@ export default function AgentSupplierEditPage() {
   const isBusy = saveMut.isPending || deleteMut.isPending;
 
   return (
-    <div>
-      <p><Link to="/agent/suppliers">← Fornecedores IA</Link></p>
-      <h1>{isNew ? "Novo Fornecedor" : slug}</h1>
+    <div className="supplier-rules-page">
+      <Link to="/agent/suppliers" className="supplier-rules-back">← Fornecedores IA</Link>
 
-      {q.isLoading && <p>A carregar…</p>}
-      {q.error && <p className="error">{(q.error as Error).message}</p>}
-      {saveMut.isSuccess && !isNew && <p className="success">Gravado.</p>}
-      {saveMut.error && <p className="error">{(saveMut.error as Error).message}</p>}
-      {deleteMut.error && <p className="error">{(deleteMut.error as Error).message}</p>}
+      <div className="supplier-rules-header">
+        <h1>{isNew ? "Novo fornecedor" : slug}</h1>
+        <span className="supplier-rules-stamp">{isNew ? "Esboço" : "Regras"}</span>
+      </div>
+
+      {q.isLoading && <p className="muted">A carregar…</p>}
+      {q.error && <p className="status error">{(q.error as Error).message}</p>}
+      {saveMut.isSuccess && !isNew && <p className="status ok">Gravado.</p>}
+      {saveMut.error && <p className="status error">{(saveMut.error as Error).message}</p>}
+      {deleteMut.error && <p className="status error">{(deleteMut.error as Error).message}</p>}
 
       <div className="card">
         {isNew && (
-          <label style={{ display: "block", marginBottom: "1rem" }}>
-            Slug
+          <label className="supplier-rules-field">
+            <span className="supplier-rules-field-label">Slug</span>
             <input
+              className="supplier-rules-input"
               value={newSlug}
               onChange={(e) => { setNewSlug(e.target.value); setSlugError(""); }}
               placeholder="ex: nova_marca"
-              style={{ display: "block", width: "100%", marginTop: "0.25rem" }}
             />
-            {slugError && <span className="error" style={{ fontSize: "0.8rem" }}>{slugError}</span>}
-            <span className="muted" style={{ fontSize: "0.8rem" }}>Apenas letras minúsculas, dígitos, _ e -</span>
+            {slugError && <span className="supplier-rules-field-hint is-error">{slugError}</span>}
+            <span className="supplier-rules-field-hint">Apenas letras minúsculas, dígitos, _ e -</span>
           </label>
         )}
 
-        <label style={{ display: "block" }}>
-          Regras (Markdown)
+        <label className="supplier-rules-field">
+          <span className="supplier-rules-field-label">Regras (Markdown)</span>
           <textarea
+            className="supplier-rules-editor"
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            style={{
-              display: "block",
-              width: "100%",
-              minHeight: "70vh",
-              marginTop: "0.25rem",
-              fontFamily: "monospace",
-              fontSize: "0.85rem",
-              resize: "vertical",
-              boxSizing: "border-box",
-            }}
           />
         </label>
 
-        <div className="row-actions" style={{ marginTop: "1rem" }}>
+        <div className="supplier-rules-actions">
           <button type="button" className="btn primary" disabled={isBusy} onClick={handleSave}>
             {saveMut.isPending ? "A guardar…" : "Guardar"}
           </button>
           {!isNew && (
             <button
               type="button"
-              className="btn"
-              style={{ color: "var(--danger)" }}
+              className="btn danger"
               disabled={isBusy}
               onClick={handleDelete}
             >
