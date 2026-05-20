@@ -32,5 +32,9 @@ Thumbs.db
 # Docker (local overrides)
 compose.override.yml
 
+# Runtime data mounted into the api container (supplier rules, etc.)
+# User-edited per host — never source-control.
+data/
+
 # Legacy Django project (not part of this repo)
 legacy/

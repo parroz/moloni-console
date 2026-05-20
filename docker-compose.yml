@@ -16,6 +16,12 @@ services:
     expose:
       - "8000"
     restart: unless-stopped
+    # Persist supplier rules (written via the UI) across container rebuilds.
+    # The host directory is the source of truth; the image's baked-in seed at
+    # /app/app/agent/suppliers is shadowed by this mount. Seed the host dir on
+    # first deploy (see deploy_moloni.sh).
+    volumes:
+      - ./data/supplier-rules:/app/app/agent/suppliers
     healthcheck:
       test:
         [
