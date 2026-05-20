@@ -6,9 +6,38 @@ conforms to the ExtractedInvoice schema. No tools, no MCP, no multi-turn.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Any
 
 _SUPPLIERS_DIR = Path(__file__).resolve().parent / "suppliers"
+
+
+# ── Moloni Configuration block parser ─────────────────────────────────────────
+# Each supplier .md must contain a `## Moloni Configuration` section with the
+# IDs the applier needs. The block is the source of truth — the AI extractor
+# is told about it via the system prompt but does NOT mediate these values.
+
+_CONFIG_SECTION_HEADER = "moloni configuration"
+_CONFIG_LINE_RE = re.compile(r"^[\s*\-]*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+?)\s*$")
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
+
+REQUIRED_CONFIG_KEYS: tuple[str, ...] = (
+    "parent_category_id",
+    "supplier_id",
+    "document_set_id",
+    "maturity_date_id",
+    "delivery_method_id",
+    "unit_id",
+    "tax_id",
+)
+
+OPTIONAL_CONFIG_DEFAULTS: dict[str, Any] = {
+    "tax_value": 23,
+    "exemption_reason": "M10",
+}
+
+_INT_CONFIG_KEYS = set(REQUIRED_CONFIG_KEYS) | {"tax_value"}
 
 
 BASE_SYSTEM_PROMPT = """\
@@ -148,6 +177,62 @@ def delete_supplier(slug: str) -> bool:
         path.unlink()
         return True
     return False
+
+
+def parse_supplier_config(slug: str) -> dict[str, Any]:
+    """Parse `## Moloni Configuration` block from the supplier .md.
+
+    Returns the merged dict (parsed values + defaults for known optional keys).
+    Raises FileNotFoundError if the supplier .md doesn't exist. Missing or
+    malformed keys are NOT raised here — call validate_supplier_config to
+    surface them with a user-friendly message.
+    """
+    text = load_supplier_rules(slug)
+    if text is None:
+        raise FileNotFoundError(f"No supplier rules for slug {slug!r}")
+
+    in_section = False
+    raw: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("##"):
+            heading = stripped.lstrip("#").strip().lower()
+            in_section = heading == _CONFIG_SECTION_HEADER
+            continue
+        if not in_section or not stripped:
+            continue
+        m = _CONFIG_LINE_RE.match(stripped)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2)
+        # Strip trailing parenthetical comments like "1506793 (60 Dias)"
+        value = _TRAILING_PAREN_RE.sub("", value).strip()
+        raw[key] = value
+
+    config: dict[str, Any] = dict(OPTIONAL_CONFIG_DEFAULTS)
+    for key, value in raw.items():
+        if key in _INT_CONFIG_KEYS:
+            try:
+                config[key] = int(value)
+            except ValueError:
+                config[key] = value  # keep raw so validator can flag it
+        else:
+            config[key] = value
+    return config
+
+
+def validate_supplier_config(config: dict[str, Any]) -> list[str]:
+    """Return a list of required keys that are missing or invalid (empty = OK)."""
+    bad: list[str] = []
+    for key in REQUIRED_CONFIG_KEYS:
+        v = config.get(key)
+        if v is None or v == "":
+            bad.append(key)
+            continue
+        if key in _INT_CONFIG_KEYS:
+            if not isinstance(v, int) or v <= 0:
+                bad.append(key)
+    return bad
 
 
 def build_system_blocks(supplier_slug: str) -> list[dict]:

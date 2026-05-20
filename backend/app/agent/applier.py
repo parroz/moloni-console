@@ -10,6 +10,7 @@ import asyncio
 import logging
 from typing import Any, AsyncIterator
 
+from app.agent.prompts import parse_supplier_config, validate_supplier_config
 from app.agent.schema import ExtractedInvoice
 from app.config import Settings
 from app.moloni_categories import fetch_categories_level
@@ -41,34 +42,6 @@ async def _fetch_products_in_category(
             by_ref[ref] = p
     log.info("applier: fetched %d products from category %s", len(by_ref), category_id)
     return by_ref
-
-
-def _supplier_parent_category_id(supplier_slug: str) -> int:
-    """Map supplier slug → parent category_id. Read from supplier rules in v2;
-    for v1 we support American Vintage hardcoded."""
-    # The parent category lives in the supplier .md but parsing markdown is overkill;
-    # keep a mapping here, fall back to a sensible default.
-    mapping = {
-        "american_vintage": 6549313,
-    }
-    return mapping.get(supplier_slug, 0)
-
-
-def _supplier_defaults(supplier_slug: str) -> dict[str, Any]:
-    """Hardcoded supplier defaults for invoice creation. Will move into the .md
-    parsing or a sidecar JSON in v2."""
-    if supplier_slug == "american_vintage":
-        return {
-            "supplier_id": 2032922,
-            "document_set_id": 546933,
-            "maturity_date_id": 1506793,
-            "delivery_method_id": 1733368,
-            "unit_id": 2104808,
-            "tax_id": 2537703,
-            "tax_value": 23,
-            "exemption_reason": "M10",
-        }
-    return {}
 
 
 def _build_product_insert_body(
@@ -148,7 +121,7 @@ def _build_supplier_invoice_insert_body(
         "expiration_date": extracted.header.expiration_date or extracted.header.date,
         "maturity_date_id": int(defaults.get("maturity_date_id", 0)),
         "document_set_id": int(defaults.get("document_set_id", 0)),
-        "supplier_id": int(extracted.supplier.moloni_supplier_id or defaults.get("supplier_id", 0)),
+        "supplier_id": int(defaults["supplier_id"]),
         "our_reference": "",
         "your_reference": extracted.header.invoice_number,
         "financial_discount": 0,
@@ -170,18 +143,36 @@ async def apply_invoice(
     """Yield a stream of dict events. Caller wraps as SSE."""
     company_id = settings.moloni_company_id
     supplier_slug = extracted.supplier.slug
-    parent_cat = _supplier_parent_category_id(supplier_slug)
-    defaults = _supplier_defaults(supplier_slug)
 
     yield {"type": "started"}
 
-    if parent_cat <= 0:
+    try:
+        config = parse_supplier_config(supplier_slug)
+    except FileNotFoundError:
         yield {
             "type": "invoice_error",
-            "message": f"No supplier parent category configured for slug {supplier_slug!r}",
+            "message": (
+                f"No supplier rules found for slug {supplier_slug!r}. "
+                "Save them via Fornecedores IA first."
+            ),
         }
         yield {"type": "done"}
         return
+
+    missing = validate_supplier_config(config)
+    if missing:
+        yield {
+            "type": "invoice_error",
+            "message": (
+                f"Supplier rules ({supplier_slug}) missing or invalid in the "
+                f"'## Moloni Configuration' section: {', '.join(missing)}."
+            ),
+        }
+        yield {"type": "done"}
+        return
+
+    parent_cat: int = config["parent_category_id"]
+    defaults: dict[str, Any] = config
 
     # ── Step 1: resolve subcategories. Build name→id map, create missing.
     try:
