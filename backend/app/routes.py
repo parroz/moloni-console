@@ -510,6 +510,45 @@ async def bulk_update_products(
             )
             res = await moloni.post("products/update", payload)
             log.info("bulk_update product_id=%s response=%r", row.product_id, res)
+            # Did Moloni *actually* apply the name change? Re-fetch and compare.
+            # Variant children are known to accept name updates with valid=1
+            # but keep the old value — surfacing that case here gives the UI
+            # a real error instead of a silent lie.
+            sent_name = payload.get("name")
+            existing_name = full.get("name")
+            if sent_name and sent_name != existing_name:
+                after = await moloni.post(
+                    "products/getOne",
+                    {"company_id": settings.moloni_company_id, "product_id": row.product_id},
+                )
+                if isinstance(after, dict) and after.get("name") != sent_name:
+                    log.warning(
+                        "bulk_update product_id=%s: Moloni accepted but kept name. "
+                        "sent=%r still got %r after update. Variant child? "
+                        "Full keys: %s",
+                        row.product_id, sent_name, after.get("name"), sorted(after.keys()),
+                    )
+                    # Log just the keys that look variant-related so we can
+                    # see what's there without dumping thousands of bytes.
+                    interesting = {
+                        k: after.get(k) for k in (
+                            "parent_product_id", "father_product_id", "father",
+                            "type", "composition", "variants", "child_products",
+                            "is_variant", "has_variants",
+                        ) if k in after
+                    }
+                    log.warning("bulk_update product_id=%s variant-relevant fields: %r", row.product_id, interesting)
+                    results.append({
+                        "product_id": row.product_id,
+                        "ok": False,
+                        "error": (
+                            f"Moloni accepted the update (valid=1) but kept the old name "
+                            f"({after.get('name')!r}). This product is likely a variant "
+                            "child — the name must be set on its parent product."
+                        ),
+                        "result": res,
+                    })
+                    continue
             # Moloni's "200 OK + {valid: 0}" is an application-level failure;
             # we used to mark these as ok=True and silently mislead the UI.
             if isinstance(res, dict) and res.get("valid") in (0, "0"):
