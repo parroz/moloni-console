@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import logging
 import time
 from typing import Any
 
 import httpx
+
+log = logging.getLogger("moloni.client")
 
 MOLONI_BASE = "https://api.moloni.pt/v1"
 
@@ -111,17 +115,30 @@ class MoloniClient:
         qty_key: str = "qty",
         offset_key: str = "offset",
         page_size: int = 50,
-        max_pages: int = 2000,
+        max_pages: int = 200,
     ) -> list[Any]:
+        """Paginate a Moloni list endpoint until no more rows or page < page_size.
+
+        Defends against runaway loops two ways:
+        - A duplicate-chunk guard: if Moloni returns the same chunk twice in a
+          row (some filters silently ignore offset), abort with a clear error.
+        - A page-count ceiling: 200 pages × 50 rows = 10K results, enough for
+          any sane single-parent listing. Set max_pages= higher per-call if you
+          really need to paginate millions.
+        """
         out: list[Any] = []
         offset = 0
         pages = 0
+        prev_sig: str | None = None
         while True:
             pages += 1
             if pages > max_pages:
                 raise MoloniAPIError(
-                    f"Moloni {path}: pagination exceeded {max_pages} pages (possible duplicate pages from API).",
-                    body={"offset": offset, "collected": len(out)},
+                    f"Moloni {path}: pagination exceeded {max_pages} pages "
+                    f"(collected {len(out)} rows). Likely cause: the filter "
+                    "matches an unexpectedly large set (wrong parent_id?) or "
+                    "Moloni is ignoring offset.",
+                    body={"offset": offset, "collected": len(out), "body": body},
                 )
             payload = {**body, qty_key: page_size, offset_key: offset}
             chunk = await self.post(path, payload)
@@ -129,6 +146,18 @@ class MoloniClient:
                 raise MoloniAPIError(f"Expected list from {path}", body=chunk)
             if not chunk:
                 break
+            # Detect Moloni returning the same page twice → offset ignored.
+            sig = hashlib.sha1(
+                json.dumps(chunk, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            if sig == prev_sig:
+                raise MoloniAPIError(
+                    f"Moloni {path}: identical page returned twice at offset "
+                    f"{offset} — endpoint is ignoring pagination. Check that "
+                    f"the filter is valid (e.g. parent_id exists).",
+                    body={"offset": offset, "collected": len(out), "body": body},
+                )
+            prev_sig = sig
             out.extend(chunk)
             if len(chunk) < page_size:
                 break
