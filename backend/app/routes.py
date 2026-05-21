@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+
+log = logging.getLogger("moloni.routes")
 
 from app.config import Settings, get_settings
 from app.deps import MoloniDep, require_auth
@@ -491,9 +494,35 @@ async def bulk_update_products(
             elif row.price is not None:
                 patch["price"] = row.price
             payload = build_product_update_body(settings.moloni_company_id, full, patch)
+            # Diagnostic log: compare the incoming patch against the existing
+            # product so we can see which fields are actually changing. If a
+            # field looks correct in the patch but doesn't update in Moloni,
+            # this trail tells us whether it's our code or Moloni's quirk.
+            log.info(
+                "bulk_update product_id=%s patch_keys=%s "
+                "name: %r → %r | ean: %r → %r | price: %r → %r | category_id: %r → %r",
+                row.product_id,
+                sorted(patch.keys()),
+                full.get("name"), payload.get("name"),
+                full.get("ean"), payload.get("ean"),
+                full.get("price"), payload.get("price"),
+                full.get("category_id"), payload.get("category_id"),
+            )
             res = await moloni.post("products/update", payload)
+            log.info("bulk_update product_id=%s response=%r", row.product_id, res)
+            # Moloni's "200 OK + {valid: 0}" is an application-level failure;
+            # we used to mark these as ok=True and silently mislead the UI.
+            if isinstance(res, dict) and res.get("valid") in (0, "0"):
+                results.append({
+                    "product_id": row.product_id,
+                    "ok": False,
+                    "error": f"Moloni rejected update (valid=0): {res!r}",
+                    "result": res,
+                })
+                continue
             results.append({"product_id": row.product_id, "ok": True, "result": res})
         except MoloniAPIError as e:
+            log.warning("bulk_update product_id=%s MoloniAPIError: %s", row.product_id, e)
             results.append({"product_id": row.product_id, "ok": False, "error": str(e), "body": e.body})
     return {"results": results}
 
