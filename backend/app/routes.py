@@ -510,54 +510,48 @@ async def bulk_update_products(
             )
             res = await moloni.post("products/update", payload)
             log.info("bulk_update product_id=%s response=%r", row.product_id, res)
-            # Did Moloni *actually* apply the name change? Re-fetch and compare.
-            # Variant children are known to accept name updates with valid=1
-            # but keep the old value — surfacing that case here gives the UI
-            # a real error instead of a silent lie.
-            sent_name = payload.get("name")
-            existing_name = full.get("name")
-            if sent_name and sent_name != existing_name:
+            # Verify that every field the user actually changed survived the
+            # update. Moloni answers valid=1 even when it silently keeps fields
+            # at their old values (e.g. name on documented products), so we
+            # have to compare pre-vs-post explicitly.
+            verify_keys = ("name", "ean", "price", "category_id", "reference", "summary")
+            changed = {
+                k: payload.get(k)
+                for k in verify_keys
+                if k in payload and payload.get(k) != full.get(k)
+            }
+            if changed:
                 after = await moloni.post(
                     "products/getOne",
                     {"company_id": settings.moloni_company_id, "product_id": row.product_id},
                 )
-                if isinstance(after, dict) and after.get("name") != sent_name:
-                    log.warning(
-                        "bulk_update product_id=%s: Moloni accepted but kept name. "
-                        "sent=%r still got %r after update.",
-                        row.product_id, sent_name, after.get("name"),
-                    )
-                    # Diagnostic dump: full before/after product + full update
-                    # payload. Lets us spot any field Moloni is using as the
-                    # source of truth that we might be (re)writing with the
-                    # old value (composition, properties, at_product_category…).
-                    import json as _json
-                    log.warning(
-                        "bulk_update product_id=%s FULL pre-update product:\n%s",
-                        row.product_id,
-                        _json.dumps(full, indent=2, ensure_ascii=False, default=str),
-                    )
-                    log.warning(
-                        "bulk_update product_id=%s FULL payload we sent:\n%s",
-                        row.product_id,
-                        _json.dumps(payload, indent=2, ensure_ascii=False, default=str),
-                    )
-                    log.warning(
-                        "bulk_update product_id=%s FULL post-update product:\n%s",
-                        row.product_id,
-                        _json.dumps(after, indent=2, ensure_ascii=False, default=str),
-                    )
-                    results.append({
-                        "product_id": row.product_id,
-                        "ok": False,
-                        "error": (
-                            f"Moloni accepted the update (valid=1) but kept the old name "
-                            f"({after.get('name')!r}). This product is likely a variant "
-                            "child — the name must be set on its parent product."
-                        ),
-                        "result": res,
-                    })
-                    continue
+                if isinstance(after, dict):
+                    rejected = {
+                        k: {"sent": payload.get(k), "still_is": after.get(k)}
+                        for k, v in changed.items()
+                        if after.get(k) != v
+                    }
+                    if rejected:
+                        log.warning(
+                            "bulk_update product_id=%s: Moloni silently rejected fields %s",
+                            row.product_id, rejected,
+                        )
+                        results.append({
+                            "product_id": row.product_id,
+                            "ok": False,
+                            "error": (
+                                "Moloni accepted the update (valid=1) but did not change: "
+                                + ", ".join(
+                                    f"{k} (sent {v['sent']!r}, still {v['still_is']!r})"
+                                    for k, v in rejected.items()
+                                )
+                                + ". Likely cause: the product has been used on an issued "
+                                "document, so these fields are locked by Moloni for SAFT-PT "
+                                "compliance."
+                            ),
+                            "result": res,
+                        })
+                        continue
             # Moloni's "200 OK + {valid: 0}" is an application-level failure;
             # we used to mark these as ok=True and silently mislead the UI.
             if isinstance(res, dict) and res.get("valid") in (0, "0"):
