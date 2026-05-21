@@ -168,6 +168,18 @@ class MoloniClient:
                 )
             prev_sig = sig
             out.extend(chunk)
+            # Moloni docs say max qty == page_size, but some endpoints
+            # (notably productCategories/getAll) ignore qty and return the
+            # full result set in one shot. Treat that as "all data" and stop
+            # — otherwise the next request returns the same rows and the
+            # duplicate-page guard fires for what is really not an error.
+            if len(chunk) > page_size:
+                log.warning(
+                    "Moloni %s returned %d rows for qty=%d at offset %d; "
+                    "endpoint ignored qty, treating as final page.",
+                    path, len(chunk), page_size, offset,
+                )
+                break
             if len(chunk) < page_size:
                 break
             offset += page_size
