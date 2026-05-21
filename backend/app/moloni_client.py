@@ -151,6 +151,15 @@ class MoloniClient:
                 json.dumps(chunk, sort_keys=True, default=str).encode("utf-8")
             ).hexdigest()
             if sig == prev_sig:
+                # Dump enough context to the server log to diagnose without
+                # needing to re-run the call manually. Most common cause:
+                # parent_id is invalid and Moloni silently falls back to
+                # returning top-level categories (or similar) ignoring offset.
+                log.error(
+                    "Moloni %s: duplicate page at offset %d. Request body=%r. "
+                    "First row of duplicate page: %r",
+                    path, offset, body, chunk[0] if chunk else None,
+                )
                 raise MoloniAPIError(
                     f"Moloni {path}: identical page returned twice at offset "
                     f"{offset} — endpoint is ignoring pagination. Check that "
