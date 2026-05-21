@@ -524,20 +524,29 @@ async def bulk_update_products(
                 if isinstance(after, dict) and after.get("name") != sent_name:
                     log.warning(
                         "bulk_update product_id=%s: Moloni accepted but kept name. "
-                        "sent=%r still got %r after update. Variant child? "
-                        "Full keys: %s",
-                        row.product_id, sent_name, after.get("name"), sorted(after.keys()),
+                        "sent=%r still got %r after update.",
+                        row.product_id, sent_name, after.get("name"),
                     )
-                    # Log just the keys that look variant-related so we can
-                    # see what's there without dumping thousands of bytes.
-                    interesting = {
-                        k: after.get(k) for k in (
-                            "parent_product_id", "father_product_id", "father",
-                            "type", "composition", "variants", "child_products",
-                            "is_variant", "has_variants",
-                        ) if k in after
-                    }
-                    log.warning("bulk_update product_id=%s variant-relevant fields: %r", row.product_id, interesting)
+                    # Diagnostic dump: full before/after product + full update
+                    # payload. Lets us spot any field Moloni is using as the
+                    # source of truth that we might be (re)writing with the
+                    # old value (composition, properties, at_product_category…).
+                    import json as _json
+                    log.warning(
+                        "bulk_update product_id=%s FULL pre-update product:\n%s",
+                        row.product_id,
+                        _json.dumps(full, indent=2, ensure_ascii=False, default=str),
+                    )
+                    log.warning(
+                        "bulk_update product_id=%s FULL payload we sent:\n%s",
+                        row.product_id,
+                        _json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+                    )
+                    log.warning(
+                        "bulk_update product_id=%s FULL post-update product:\n%s",
+                        row.product_id,
+                        _json.dumps(after, indent=2, ensure_ascii=False, default=str),
+                    )
                     results.append({
                         "product_id": row.product_id,
                         "ok": False,
