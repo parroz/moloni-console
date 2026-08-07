@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import time
 from typing import Any
 
@@ -15,12 +16,27 @@ log = logging.getLogger("moloni.client")
 
 MOLONI_BASE = "https://api.moloni.pt/v1"
 
+# Moloni rate-limits aggressively. Callers routinely fan out one request per
+# invoice line (asyncio.gather over products/getOne), which trivially exceeds
+# the limit on a large invoice. Every request goes through a semaphore so the
+# fan-out is bounded no matter how many coroutines the caller spawns.
+MAX_CONCURRENT_REQUESTS = 4
+
+# 429 retry policy: exponential backoff, honouring Retry-After when present.
+RATE_LIMIT_MAX_RETRIES = 5
+RATE_LIMIT_BASE_DELAY = 1.0  # seconds; doubles each attempt
+RATE_LIMIT_MAX_DELAY = 30.0
+
 
 class MoloniAPIError(Exception):
     def __init__(self, message: str, status_code: int | None = None, body: Any = None):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+
+
+class MoloniRateLimitError(MoloniAPIError):
+    """Raised when Moloni keeps returning 429 after exhausting retries."""
 
 
 class MoloniClient:
@@ -32,6 +48,7 @@ class MoloniClient:
         username: str,
         password: str,
         company_id: int,
+        max_concurrent: int = MAX_CONCURRENT_REQUESTS,
     ):
         # Moloni /grant query uses OAuth names; panel calls them DEVELOPER_ID and CLIENT_KEY.
         self._grant_client_id = developer_id
@@ -42,7 +59,13 @@ class MoloniClient:
         self._access_token: str | None = None
         self._token_deadline: float = 0.0
         self._token_lock = asyncio.Lock()
-        self._http = httpx.AsyncClient(timeout=120.0)
+        self._http = httpx.AsyncClient(
+            timeout=120.0,
+            limits=httpx.Limits(max_connections=max_concurrent),
+        )
+        # Gate on every outbound request, so unbounded asyncio.gather at the
+        # call site still results in a bounded request rate.
+        self._gate = asyncio.Semaphore(max_concurrent)
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -96,16 +119,59 @@ class MoloniClient:
             self._token_deadline = now + expires_in
             return token
 
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
+        """Delay before the next 429 retry. Prefers the server's Retry-After
+        header; otherwise exponential backoff capped at RATE_LIMIT_MAX_DELAY.
+        Jitter keeps concurrent retries from re-colliding in lockstep."""
+        header = response.headers.get("Retry-After")
+        if header:
+            try:
+                return min(float(header), RATE_LIMIT_MAX_DELAY)
+            except ValueError:
+                pass  # Retry-After may be an HTTP-date; fall through to backoff
+        backoff = min(RATE_LIMIT_BASE_DELAY * (2**attempt), RATE_LIMIT_MAX_DELAY)
+        return backoff * (1 + random.random() * 0.25)
+
     async def post(self, path: str, body: dict[str, Any]) -> Any:
-        token = await self._ensure_token()
-        url = f"{MOLONI_BASE}/{path}/?access_token={token}&json=true"
-        r = await self._http.post(url, json=body)
-        if r.status_code != 200:
-            raise MoloniAPIError(f"Moloni POST {path} failed", r.status_code, r.text)
-        try:
-            return r.json()
-        except Exception:
-            return r.text
+        last_response: httpx.Response | None = None
+
+        for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+            token = await self._ensure_token()
+            url = f"{MOLONI_BASE}/{path}/?access_token={token}&json=true"
+
+            async with self._gate:
+                r = await self._http.post(url, json=body)
+
+            if r.status_code == 429:
+                last_response = r
+                if attempt == RATE_LIMIT_MAX_RETRIES:
+                    break
+                delay = self._retry_after_seconds(r, attempt)
+                log.warning(
+                    "Moloni 429 on %s (attempt %d/%d); retrying in %.1fs",
+                    path,
+                    attempt + 1,
+                    RATE_LIMIT_MAX_RETRIES,
+                    delay,
+                )
+                # Sleep outside the semaphore so we release our slot while waiting.
+                await asyncio.sleep(delay)
+                continue
+
+            if r.status_code != 200:
+                raise MoloniAPIError(f"Moloni POST {path} failed", r.status_code, r.text)
+            try:
+                return r.json()
+            except Exception:
+                return r.text
+
+        raise MoloniRateLimitError(
+            f"Moloni POST {path} rate-limited (429) after "
+            f"{RATE_LIMIT_MAX_RETRIES} retries. Try again in a minute.",
+            429,
+            last_response.text if last_response is not None else None,
+        )
 
     async def post_all_pages(
         self,
