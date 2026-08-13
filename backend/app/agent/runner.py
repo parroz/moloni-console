@@ -16,6 +16,7 @@ from typing import Any
 
 import anthropic
 
+from app.agent.pdf_text import PdfTextUnavailable, extract_positioned_text
 from app.agent.prompts import build_system_blocks
 from app.agent.schema import ExtractedInvoice
 from app.config import Settings
@@ -71,20 +72,42 @@ async def extract_invoice(
         raise ExtractionError("No PDF bytes provided.")
 
     system_blocks = build_system_blocks(supplier_slug)
-    user_msg: dict[str, Any] = {
-        "role": "user",
-        "content": [
-            _pdf_block(pdf_bytes),
+
+    # The rendered page alone is not enough to recover size-matrix columns
+    # reliably (a bare "1" under XS vs S is pure horizontal position). Ship the
+    # PDF's own text layer with coordinates so column alignment is exact
+    # matching rather than perception. Soft-fails on scanned PDFs.
+    content: list[dict[str, Any]] = [_pdf_block(pdf_bytes)]
+    try:
+        positioned = extract_positioned_text(pdf_bytes)
+        content.append(
             {
                 "type": "text",
                 "text": (
-                    f"Extract the supplier invoice from this PDF ({pdf_filename}). "
-                    f"Apply the supplier rules for slug `{supplier_slug}`. "
-                    "Return ONLY the JSON object — nothing before, nothing after."
+                    "AUTHORITATIVE TEXT LAYER — every word of the PDF with its exact "
+                    "horizontal position, as `word@x`, grouped into visual rows.\n"
+                    "Use this, NOT the rendered image, to decide which column a number "
+                    "belongs to: a cell belongs to the header whose `@x` it matches.\n"
+                    "Where the image and this text disagree, this text wins.\n\n"
+                    f"{positioned}"
                 ),
-            },
-        ],
-    }
+            }
+        )
+        log.info("extract: attached positioned text layer (%d chars)", len(positioned))
+    except PdfTextUnavailable as e:
+        log.warning("extract: no text layer (%s) — falling back to image only", e)
+
+    content.append(
+        {
+            "type": "text",
+            "text": (
+                f"Extract the supplier invoice from this PDF ({pdf_filename}). "
+                f"Apply the supplier rules for slug `{supplier_slug}`. "
+                "Return ONLY the JSON object — nothing before, nothing after."
+            ),
+        }
+    )
+    user_msg: dict[str, Any] = {"role": "user", "content": content}
 
     log.info(
         "extract: pdf=%s supplier=%s pdf_size=%d model=%s",

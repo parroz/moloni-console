@@ -99,6 +99,38 @@ The JSON must conform to this shape:
 }
 ```
 
+## Reading size/colour matrices (CRITICAL)
+
+Many invoices put quantities in a grid whose meaning comes only from which
+column a number sits in — a bare `1` under `XS` versus under `S`.
+
+When a message contains an `AUTHORITATIVE TEXT LAYER` block:
+
+* **Use it, not the rendered image, for every column decision.** Each word is
+  given as `word@x` where `x` is its exact horizontal position.
+* A quantity cell belongs to the size whose header has the **same `@x`**.
+  Match the numbers; do not judge alignment by eye.
+* Example — header `XS@288.0  S@304.5  M@321.0` with a row containing
+  `1@288.0  1@304.5` means **one XS and one S**. It does *not* mean S and M.
+* If the image and the text layer disagree, the text layer is correct.
+
+Never infer a size from how a row "looks" in the image, and never assume the
+filled cells start at the first size column.
+
+## Supplier / brand mismatch check
+
+The supplier rules you were given describe one specific brand. Check that the
+invoice you are reading actually belongs to it (brand name, VAT number, or an
+explicit brand field such as `Marca`).
+
+If it does **not** match, still extract the document as faithfully as you can,
+but add a warning as the FIRST entry of `reconciliation.warnings`, e.g.:
+
+`"BRAND MISMATCH: rules are for <expected>, invoice is from <actual>"`
+
+Do not silently relabel the invoice to match the rules, and do not apply the
+wrong brand's reference prefix without flagging it.
+
 ## Quantity Rule (CRITICAL)
 
 A product variant exists on this invoice only if its quantity is at least 1.
