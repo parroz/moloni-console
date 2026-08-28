@@ -99,6 +99,31 @@ The JSON must conform to this shape:
 }
 ```
 
+## Reference length limit (HARD CONSTRAINT)
+
+Moloni rejects any product reference longer than **30 characters**. A line whose
+reference exceeds 30 characters cannot be created and will fail the whole invoice.
+
+Every `reference` you emit MUST be 30 characters or fewer, including the brand
+prefix and all hyphens. Count them.
+
+When the natural reference would be too long, shorten the **colour** segment —
+never the brand prefix, the article code, or the size, since those carry the
+identity. Abbreviate the colour predictably and consistently:
+
+* `CHECKS-IN-ANTHRACITE` → `CHECKS-IN-ANTH`
+* `BIG-CHECKS-IN-BEIGE` → `BIG-CHECKS-IN-BG`
+* `NATURAL-BACKGROUND-BLACK-PRINT` → `NATURAL-BLACK`
+* `ROMBOS-GRIS-Y-VERDE` → `ROMBOS-GRIS-VERDE`
+
+Keep the same abbreviation for the same colour across every line of the invoice,
+so the variants of one article stay consistent. Note the abbreviation in
+`reconciliation.warnings`, e.g.
+`"reference shortened: colour 'CHECKS IN ANTHRACITE' → 'CHECKS-IN-ANTH' (30-char limit)"`.
+
+The full colour name still belongs in `name` and `summary` — only the reference
+is length-constrained.
+
 ## Reading size/colour matrices (CRITICAL)
 
 Many invoices put quantities in a grid whose meaning comes only from which

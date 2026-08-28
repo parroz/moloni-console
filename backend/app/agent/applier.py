@@ -21,6 +21,10 @@ log = logging.getLogger("agent.applier")
 # Small delay between Moloni writes — polite, avoids burst rate limits.
 _INTER_CALL_SLEEP = 0.1
 
+# Moloni rejects a product reference longer than this with ["4 reference"].
+# Verified against the live catalogue: the longest stored reference is exactly 30.
+MAX_REFERENCE_LEN = 30
+
 
 async def _fetch_products_in_category(
     client: MoloniClient, company_id: int, category_id: int
@@ -42,6 +46,53 @@ async def _fetch_products_in_category(
             by_ref[ref] = p
     log.info("applier: fetched %d products from category %s", len(by_ref), category_id)
     return by_ref
+
+
+async def _find_product_anywhere(
+    client: MoloniClient, company_id: int, reference_upper: str
+) -> dict[str, Any] | None:
+    """Find a product by exact reference anywhere in the company.
+
+    References are unique company-wide in Moloni, but a product may sit in a
+    different category than the one derived from the invoice. `products/getAll`
+    silently ignores a `reference` filter; `products/getBySearch` honours it
+    (substring match), so we search and then require an exact match.
+    """
+    try:
+        hits = await client.post(
+            "products/getBySearch",
+            {"company_id": company_id, "search": reference_upper},
+        )
+    except MoloniAPIError as e:
+        log.warning("applier: getBySearch(%s) failed: %s", reference_upper, e)
+        return None
+    if not isinstance(hits, list):
+        return None
+    for p in hits:
+        if str(p.get("reference", "")).strip().upper() == reference_upper:
+            return p
+    return None
+
+
+def _moloni_error_detail(res: Any) -> str:
+    """Human-readable reason from a failed Moloni write.
+
+    Moloni reports validation failures as a LIST of "<code> <field>" strings
+    (e.g. ["4 reference"]) rather than an error object, so a dict-only reader
+    discards the reason entirely.
+    """
+    if isinstance(res, list) and res:
+        parts = [str(x) for x in res]
+        detail = "; ".join(parts)
+        if any("reference" in p for p in parts):
+            detail += (
+                " — Moloni rejeitou a referência: ou já pertence a outro produto, "
+                f"ou excede {MAX_REFERENCE_LEN} caracteres"
+            )
+        return detail
+    if isinstance(res, dict):
+        return str(res)
+    return repr(res)
 
 
 def _build_product_insert_body(
@@ -236,9 +287,13 @@ async def apply_invoice(
             yield {"type": "done"}
             return
 
-    # ── Step 2 & 3: per line — look up by reference (lazy per-subcategory cache), create if missing.
-    # Moloni's products/getAll filters reliably by category_id but not by reference.
-    # We fetch each subcategory once on demand and cache the results for the run.
+    # ── Step 2 & 3: per line — look up by reference, create if missing.
+    # Two-stage lookup, because a reference is unique COMPANY-WIDE in Moloni but a
+    # product does not necessarily live in the subcategory we derived for it:
+    #   1. bulk per-subcategory fetch (cheap once cached, covers the common case)
+    #   2. company-wide search by reference, for products filed under some other
+    #      category. Without this, such a product is invisible here and we fall
+    #      through to insert, which Moloni rejects as a duplicate reference.
     cat_cache: dict[int, dict[str, Any]] = {}  # category_id → {ref_upper: product}
     line_product_ids: dict[str, int] = {}
 
@@ -252,10 +307,27 @@ async def apply_invoice(
 
         match = cat_cache[cat_id].get(ref_key)
 
+        if not match:
+            match = await _find_product_anywhere(client, company_id, ref_key)
+            if match:
+                await asyncio.sleep(_INTER_CALL_SLEEP)
+
         if match:
             pid = int(match["product_id"])
             line_product_ids[line.reference] = pid
             yield {"type": "line_matched", "reference": line.reference, "product_id": pid}
+            continue
+
+        if len(line.reference) > MAX_REFERENCE_LEN:
+            yield {
+                "type": "line_error",
+                "reference": line.reference,
+                "message": (
+                    f"referência tem {len(line.reference)} caracteres, o máximo do "
+                    f"Moloni é {MAX_REFERENCE_LEN} — encurta-a na tabela de revisão "
+                    "antes de aplicar"
+                ),
+            }
             continue
 
         yield {"type": "line_creating", "reference": line.reference}
@@ -275,7 +347,11 @@ async def apply_invoice(
             res = await client.post("products/insert", body)
             new_pid = int(res.get("product_id", 0)) if isinstance(res, dict) else 0
             if not new_pid:
-                yield {"type": "line_error", "reference": line.reference, "message": "insert returned no product_id"}
+                yield {
+                    "type": "line_error",
+                    "reference": line.reference,
+                    "message": f"products/insert falhou: {_moloni_error_detail(res)}",
+                }
                 continue
             line_product_ids[line.reference] = new_pid
             # Update cache so a duplicate reference later in the same invoice hits the match path
