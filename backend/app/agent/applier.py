@@ -107,7 +107,10 @@ def _build_product_insert_body(
     tax_id: int,
     tax_value: float,
 ) -> dict[str, Any]:
-    """Body for products/insert. Conservative defaults; stock disabled."""
+    """Body for products/insert. Stock tracking on, like the rest of the catalogue:
+    the product starts at 0 and closing the supplier invoice in Moloni adds the
+    received quantity. `at_product_category` "M" (mercadorias) matches the
+    existing stock-tracked products."""
     return {
         "company_id": company_id,
         "category_id": category_id,
@@ -118,11 +121,11 @@ def _build_product_insert_body(
         "ean": "",
         "price": price,
         "unit_id": unit_id,
-        "has_stock": 0,
+        "has_stock": 1,
         "stock": 0,
         "minimum_stock": 0,
         "pos_favorite": 0,
-        "at_product_category": "",
+        "at_product_category": "M",
         "exemption_reason": "",
         "taxes": [
             {
