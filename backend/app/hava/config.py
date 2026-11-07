@@ -14,6 +14,11 @@ class HavaSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
     hava_telegram_token: str = ""
+    # Hava herself runs as a Claude Code session on Pedro's Mac (Telegram channel
+    # plugin) and uses this container through app.hava.cli. Telegram allows one
+    # poller per bot, so the server must not poll; it only sends the daily report.
+    # True brings back the standalone server bot (bot.py + pipeline.py).
+    hava_telegram_poll: bool = False
     # The one group Hava listens to. 0 = setup mode: Hava only answers /chatid.
     hava_chat_id: int = 0
     # Model for Hava's own reasoning (supplier detection, onboarding, corrections).

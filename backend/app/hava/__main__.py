@@ -63,6 +63,10 @@ async def main() -> None:
     )
     bot = Bot(hs, tg, store, pipeline, daily)
     try:
+        if not hs.hava_telegram_poll:
+            log.info("Telegram polling off (Hava runs on the Mac); sending only the daily report.")
+            await asyncio.gather(daily.run(), heartbeat(hs.data_path / "heartbeat"))
+            return
         pipeline.resume_after_restart()
         await asyncio.gather(
             bot.run(), pipeline.worker(), daily.run(), heartbeat(hs.data_path / "heartbeat")
