@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.hava.bot import Bot
 from app.hava.config import get_hava_settings
 from app.hava.pipeline import Pipeline
+from app.hava.sales import DailyReport
 from app.hava.store import Store
 from app.hava.telegram import Telegram
 from app.moloni_client import MoloniClient
