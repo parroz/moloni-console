@@ -50,10 +50,22 @@ async def main() -> None:
         company_id=settings.moloni_company_id,
     )
     pipeline = Pipeline(hs, settings, tg, store, moloni)
-    bot = Bot(hs, tg, store, pipeline)
+    daily = DailyReport(
+        tg=tg,
+        store=store,
+        client=moloni,
+        company_id=settings.moloni_company_id,
+        chat_id=hs.hava_chat_id,
+        at=hs.hava_daily_report_at,
+        tz=hs.hava_timezone,
+        exclude_refs=hs.sales_exclude_refs,
+    )
+    bot = Bot(hs, tg, store, pipeline, daily)
     try:
         pipeline.resume_after_restart()
-        await asyncio.gather(bot.run(), pipeline.worker(), heartbeat(hs.data_path / "heartbeat"))
+        await asyncio.gather(
+            bot.run(), pipeline.worker(), daily.run(), heartbeat(hs.data_path / "heartbeat")
+        )
     finally:
         await tg.aclose()
         await moloni.aclose()

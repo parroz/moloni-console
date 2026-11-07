@@ -21,6 +21,15 @@ class HavaSettings(BaseSettings):
     hava_model: str = "claude-sonnet-5-5"
     hava_data_dir: str = "/app/hava-data"
     console_base_url: str = "https://console.gluglu.app"
+    # Daily sales report posted to the group (local time, HH:MM).
+    hava_daily_report_at: str = "19:30"
+    hava_timezone: str = "Europe/Lisbon"
+    # Comma-separated reference prefixes not counted as items sold (till bags).
+    hava_sales_exclude_refs: str = "GC-SACO"
+
+    @property
+    def sales_exclude_refs(self) -> tuple[str, ...]:
+        return tuple(x.strip() for x in self.hava_sales_exclude_refs.split(",") if x.strip())
 
     @property
     def data_path(self) -> Path:

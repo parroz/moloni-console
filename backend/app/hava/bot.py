@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.hava.config import HavaSettings
 from app.hava.pipeline import Pipeline
+from app.hava.sales import DailyReport, day_sales, format_report
 from app.hava.store import Store
 from app.hava.telegram import Telegram, TelegramError, esc
 
@@ -23,11 +26,14 @@ def _sender(m: dict[str, Any]) -> str:
 
 
 class Bot:
-    def __init__(self, hs: HavaSettings, tg: Telegram, store: Store, pipeline: Pipeline) -> None:
+    def __init__(
+        self, hs: HavaSettings, tg: Telegram, store: Store, pipeline: Pipeline, daily: DailyReport | None = None
+    ) -> None:
         self.hs = hs
         self.tg = tg
         self.store = store
         self.pipeline = pipeline
+        self.daily = daily
         self.me: dict[str, Any] = {}
 
     async def run(self) -> None:
@@ -65,6 +71,10 @@ class Bot:
         if chat_id != self.hs.hava_chat_id:
             return  # only the configured group
 
+        if re.match(r"^/vendas(@\w+)?\b", text):
+            await self.on_sales_command(chat_id, m["message_id"], text)
+            return
+
         doc = m.get("document")
         if doc and (doc.get("mime_type") == "application/pdf" or str(doc.get("file_name", "")).lower().endswith(".pdf")):
             await self.on_pdf(m, doc)
@@ -90,9 +100,38 @@ class Bot:
             await self.tg.send(
                 chat_id,
                 "Para já trato das faturas de fornecedores: envia o PDF aqui no grupo. "
-                "Em breve também respondo sobre vendas, stock e preços.",
+                "Para as vendas do dia, escreve /vendas (ou /vendas ontem, /vendas 03/11). "
+                "Em breve também respondo a perguntas sobre vendas, stock e preços.",
                 reply_to=m["message_id"],
             )
+
+    async def on_sales_command(self, chat_id: int, message_id: int, text: str) -> None:
+        if self.daily is None:
+            return
+        tz = ZoneInfo(self.hs.hava_timezone)
+        today = datetime.now(tz).date()
+        arg = text.split(maxsplit=1)[1].strip().lower() if len(text.split(maxsplit=1)) > 1 else ""
+        day = today
+        if arg == "ontem":
+            day = today - timedelta(days=1)
+        elif arg:
+            m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?", arg) or None
+            iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", arg)
+            try:
+                if iso:
+                    day = date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+                elif m:
+                    year = int(m.group(3)) if m.group(3) else today.year
+                    year = year + 2000 if year < 100 else year
+                    day = date(year, int(m.group(2)), int(m.group(1)))
+                else:
+                    raise ValueError
+            except ValueError:
+                await self.tg.send(chat_id, "Não percebi a data. Usa /vendas, /vendas ontem ou /vendas 03/11.", reply_to=message_id)
+                return
+        await self.tg.typing(chat_id)
+        s = await day_sales(self.daily.client, self.daily.company_id, day, exclude_refs=self.hs.sales_exclude_refs)
+        await self.tg.send(chat_id, format_report(s, today=day == today), reply_to=message_id)
 
     async def on_pdf(self, m: dict[str, Any], doc: dict[str, Any]) -> None:
         chat_id = int(m["chat"]["id"])
