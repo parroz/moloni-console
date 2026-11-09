@@ -23,6 +23,7 @@ New supplier:
 Sales and catalogue (read-only):
     sales [YYYY-MM-DD]                day summary (default today, Lisbon)
     sold <from> <to> [filter]         products sold in a date range (max 31 days)
+    stock                             whole catalogue: products in stock and negative
     moloni <endpoint>                 stdin JSON body; read-only endpoints only
 
 PDF paths are inside the container: uploads land in /app/hava-data/inbox/.
@@ -403,6 +404,33 @@ class Tools:
             r["net_value"] = round(r["net_value"], 2)
         return {"from": start, "to": end, "filter": needle or None, "documents": docs, "products": items[:200]}
 
+    async def stock(self) -> Any:
+        """Page through the whole catalogue and split stock-tracked products by stock."""
+        body = {"company_id": self.company_id}
+        expected = await self.moloni.post("products/count", body)
+        rows = await self.moloni.post_all_pages("products/getAll", body)
+        products = {r["product_id"]: r for r in rows}
+
+        def out(p: dict[str, Any]) -> dict[str, Any]:
+            price = float(p.get("price") or 0)
+            vat = sum(float(t.get("value") or 0) for t in p.get("taxes") or [])
+            return {
+                "reference": p.get("reference", ""),
+                "name": p.get("name", ""),
+                "ean": p.get("ean", ""),
+                "stock": float(p.get("stock") or 0),
+                "pvp_with_vat": round(price + vat, 2),
+            }
+
+        tracked = [out(p) for p in products.values() if int(p.get("has_stock") or 0) == 1]
+        return {
+            "catalogue_count": int(expected["count"]),
+            "products_read": len(products),
+            "tracked": len(tracked),
+            "in_stock": sorted((p for p in tracked if p["stock"] > 0), key=lambda p: p["reference"]),
+            "negative": sorted((p for p in tracked if p["stock"] < 0), key=lambda p: (p["stock"], p["reference"])),
+        }
+
     async def moloni_read(self, endpoint: str) -> Any:
         if not _READ_ENDPOINT.match(endpoint):
             raise CliError("only read endpoints (…/get*, …/count*) are allowed")
@@ -426,6 +454,7 @@ COMMANDS = {
     "add-rules": "add_rules",
     "sales": "sales",
     "sold": "sold",
+    "stock": "stock",
     "moloni": "moloni_read",
 }
 
