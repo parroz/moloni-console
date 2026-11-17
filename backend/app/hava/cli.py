@@ -6,20 +6,24 @@ run inside the `hava` container over SSH by ~/hava-bot/tools/hava.sh:
 
     hava.sh <command> [args...]      (JSON input, when needed, on stdin)
 
+Nothing here calls an AI model: Hava (on the Mac) does the thinking and Codex
+reads the PDFs; this CLI only reads and writes data (rulebooks, jobs, Moloni).
+
 Invoices:
     suppliers                         known rulebooks (slug, title, VAT, draft?)
     rules <slug>                      a rulebook's Markdown
-    detect <pdf>                      who issued this invoice
-    extract <pdf> <slug>              read it with that rulebook → job + doubts (Claude API)
-    extract-input <pdf> <slug>        prompt + text layer for reading it elsewhere (Codex on the Mac)
-    import-extraction <pdf> <slug>    stdin {"raw": model output} → job + doubts, as extract
+    detect <pdf>                      VAT match against the rulebooks + the PDF's text
+    extract-input <pdf> <slug>        prompt + text layer for Codex to read it
+    import-extraction <pdf> <slug>    stdin {"raw": model output} → job + doubts
     job <job_id>                      current extraction + doubts of a job
-    correct <job_id>                  stdin {"qa": [[question, answer], ...]}
+    edit-job <job_id>                 stdin {line_edits, header_edits, remove_lines, add_lines}
     apply <job_id>                    create products + draft invoice in Moloni
 New supplier:
-    onboard <pdf>                     facts + proposed conventions + questions
+    onboard <pdf>                     stdin {supplier_name, supplier_vat, supplier_country, brand}
+                                      → Moloni facts, examples and the rulebook guide
     create-category <name>            new top-level product category (a write!)
-    write-rules <pdf>                 stdin {ident, plan, config, answers} → draft rulebook
+    save-rules <slug>                 stdin {markdown, config, config_notes, supplier_vat, supplier_name}
+                                      → saves a draft rulebook (never overwrites an approved one)
     approve-rules <slug>              drop the draft mark
     add-rules <slug>                  stdin {"rules": [...]} → append team corrections
 Sales and catalogue (read-only):
@@ -47,13 +51,13 @@ from app.agent.applier import apply_invoice
 from app.agent.prompts import load_supplier_rules, save_supplier_rules
 from app.agent.pdf_text import PdfTextUnavailable, extract_positioned_text
 from app.agent.prompts import build_system_blocks
-from app.agent.runner import _extract_json_object, extract_invoice
+from app.agent.runner import _extract_json_object
 from app.agent.schema import ExtractedInvoice
 from app.config import get_settings
 from app.hava import onboarding as onb
 from app.hava.config import get_hava_settings
-from app.hava.detect import Identification, detect_supplier, known_suppliers
-from app.hava.doubts import apply_answers, find_doubts
+from app.hava.detect import known_suppliers, pdf_plain_text, vat_in_text
+from app.hava.doubts import Corrections, _apply, find_doubts
 from app.hava.sales import SALE_TYPES, day_sales, format_report
 from app.hava.store import Store
 from app.moloni_client import MoloniClient
@@ -179,21 +183,22 @@ class Tools:
         return {"slug": slug, "markdown": text}
 
     async def detect(self, pdf: str) -> Any:
+        """VAT match only. Undecided → Hava reads `text` and decides (or asks the group)."""
         data, _ = _pdf(pdf)
-        det = await detect_supplier(self.settings, self.model, data)
+        text = pdf_plain_text(data)
+        known = known_suppliers()
+        hits = [s.slug for s in known if s.vat and vat_in_text(s.vat, text)]
+        decided = len(hits) == 1
         return {
-            "decided_slug": det.slug,
-            "candidates": det.candidates,
-            "ident": det.ident.model_dump() if det.ident else None,
-            "known": await self.suppliers(),
+            "decided_slug": hits[0] if decided else None,
+            "candidates": hits,
+            "known": await self.suppliers() if decided else [
+                {"slug": s.slug, "title": s.title, "vat": s.vat, "draft": s.is_draft, "summary": s.summary}
+                for s in known
+            ],
+            "text": None if decided else text[:8000],
+            "text_layer_missing": not text.strip(),
         }
-
-    async def extract(self, pdf: str, slug: str) -> Any:
-        data, path = _pdf(pdf)
-        if load_supplier_rules(slug) is None:
-            raise CliError(f"no rulebook {slug!r}")
-        inv = await extract_invoice(data, path.name, slug, self.settings)
-        return self._new_job(path, slug, inv)
 
     async def extract_input(self, pdf: str, slug: str) -> Any:
         """Everything another model needs to read this invoice exactly as `extract` does."""
@@ -252,18 +257,26 @@ class Tools:
             "doubts": _doubts_out(inv, slug, hard_only=False),
         }
 
-    async def correct(self, job_id: str) -> Any:
+    async def edit_job(self, job_id: str) -> Any:
+        """Apply Hava's structured edits (from the team's answers) to a job's extraction."""
         job, inv = self._job_invoice(job_id)
-        qa = [tuple(x) for x in _stdin_json().get("qa", [])]
-        if not qa:
-            raise CliError('stdin must be {"qa": [["question", "answer"], ...]}')
-        data = Path(job.pdf_path).read_bytes()
-        fixed, corr = await apply_answers(self.settings, self.model, data, inv, job.supplier_slug or "", qa)
+        if job.document_id:
+            raise CliError(f"job {job.id} was already applied (document {job.document_id})")
+        try:
+            corr = Corrections.model_validate(_stdin_json())
+        except ValueError as e:
+            raise CliError(f"stdin is not a valid set of edits: {e}") from e
+        bad = [i for i in corr.remove_lines if not 0 <= i < len(inv.lines)]
+        bad += [e.index for e in corr.line_edits if not 0 <= e.index < len(inv.lines)]
+        if bad:
+            raise CliError(f"line index out of range: {sorted(set(bad))} (job has {len(inv.lines)} lines)")
+        try:
+            fixed = _apply(inv, corr)
+        except ValueError as e:
+            raise CliError(f"an edit has an invalid value: {e}") from e
         self.store.update_job(job.id, extracted_json=fixed.model_dump_json())
         return {
             "job_id": job.id,
-            "note": corr.note,
-            "possible_rule_changes": corr.rule_changes,
             "invoice": _invoice_out(fixed),
             "remaining_doubts": _doubts_out(fixed, job.supplier_slug or "", hard_only=True),
         }
@@ -302,25 +315,31 @@ class Tools:
     # ── new supplier ──────────────────────────────────────────────────────────
 
     async def onboard(self, pdf: str) -> Any:
+        """Facts for a new supplier. Hava proposes the conventions and writes the rulebook."""
         data, _ = _pdf(pdf)
-        det = await detect_supplier(self.settings, self.model, data)
-        if det.ident is None:
-            raise CliError(f"this invoice matches the existing rulebook {det.slug!r}")
-        ident = det.ident
-        plan = await onb.plan_onboarding(self.settings, self.model, data, ident)
+        body = _stdin_json()
+        name = str(body.get("supplier_name") or "").strip()
+        vat = str(body.get("supplier_vat") or "").strip()
+        country = str(body.get("supplier_country") or "").strip().upper()
+        brand = str(body.get("brand") or "").strip()
+        if not name:
+            raise CliError('stdin needs {"supplier_name", "supplier_vat", "supplier_country", "brand"}')
         cats = await onb.top_categories(self.moloni, self.company_id)
-        mats = await onb.maturity_dates(self.moloni, self.company_id)
+        try:
+            text_layer = extract_positioned_text(data)
+        except PdfTextUnavailable:
+            text_layer = None
         return {
-            "ident": ident.model_dump(),
-            "plan": plan.model_dump(),
-            "moloni_suppliers": await onb.find_moloni_suppliers(
-                self.moloni, self.company_id, ident.supplier_vat, ident.supplier_name
-            ),
-            "similar_categories": onb.similar_categories(cats, plan.brand, ident.supplier_name),
-            "maturity_dates": mats,
+            "suggested_slug": onb._safe_slug(brand or name),
+            "moloni_suppliers": await onb.find_moloni_suppliers(self.moloni, self.company_id, vat, name),
+            "similar_categories": onb.similar_categories(cats, brand, name),
+            "maturity_dates": await onb.maturity_dates(self.moloni, self.company_id),
             "shared_defaults": onb.shared_defaults(),
             "pricing_examples": [f"custo × {m}" for m in onb.pricing_examples()],
-            "vat_hint": "exemption_reason M10 (intra-community)" if ident.supplier_country.upper() not in ("", "PT") else "taxed at 23% (exemption_reason empty)",
+            "vat_hint": "exemption_reason M10 (intra-community)" if country not in ("", "PT") else "taxed at 23% (exemption_reason empty)",
+            "rulebook_guide": onb._WRITE_SYSTEM,
+            "example_rulebooks": onb._example_rulebooks(),
+            "text_layer": text_layer,
         }
 
     async def create_category(self, *name_parts: str) -> Any:
@@ -340,33 +359,32 @@ class Tools:
             raise CliError(f"Moloni did not create the category: {res!r}")
         return {"created": True, "id": new_id, "name": name}
 
-    async def write_rules(self, pdf: str) -> Any:
-        data, _ = _pdf(pdf)
+    async def save_rules(self, slug: str) -> Any:
+        """Save Hava's rulebook as a draft, with the Moloni configuration block pinned."""
+        if not re.fullmatch(r"[a-z0-9_]{2,40}", slug):
+            raise CliError("slug must be lowercase letters, digits and _")
+        if load_supplier_rules(slug) is not None and not onb.is_draft(slug):
+            raise CliError(f"{slug!r} is an approved rulebook: use add-rules to change it")
         body = _stdin_json()
-        try:
-            ident = Identification.model_validate(body["ident"])
-            plan = onb.OnboardingPlan.model_validate(body["plan"])
-            cfg_in = body["config"]
-            answers = [tuple(x) for x in body.get("answers", [])]
-        except (KeyError, ValueError) as e:
-            raise CliError(f"stdin needs ident, plan, config, answers: {e}") from e
+        markdown = str(body.get("markdown") or "")
+        cfg_in = body.get("config") or {}
         required = ("supplier_id", "parent_category_id", "maturity_date_id", "exemption_reason")
         missing = [k for k in required if k not in cfg_in]
-        if missing:
-            raise CliError(f"config is missing {missing}")
+        if len(markdown) < 200 or missing:
+            raise CliError(f"stdin needs markdown and config with {list(required)}; missing {missing}")
         cfg = {**onb.shared_defaults(), **{k: cfg_in[k] for k in required}}
         notes = {k: str(v) for k, v in (body.get("config_notes") or {}).items()}
         block = onb.render_config_block(cfg, notes)
-        markdown = await onb.write_rulebook(
-            self.settings, self.model, data, ident=ident, plan=plan, config_block=block, answers=answers
+        bad = onb.finalize_and_save(
+            slug, markdown, config_block=block,
+            vat=str(body.get("supplier_vat") or ""), name=str(body.get("supplier_name") or ""),
         )
-        bad = onb.finalize_and_save(plan.slug, markdown, config_block=block, vat=ident.supplier_vat, name=ident.supplier_name)
         return {
-            "slug": plan.slug,
+            "slug": slug,
             "saved": True,
             "draft": True,
             "config_problems": bad,
-            "console_url": f"{self.hs.console_base_url}/agent/suppliers/{plan.slug}",
+            "console_url": f"{self.hs.console_base_url}/agent/suppliers/{slug}",
         }
 
     async def approve_rules(self, slug: str) -> Any:
@@ -481,15 +499,14 @@ COMMANDS = {
     "suppliers": "suppliers",
     "rules": "rules",
     "detect": "detect",
-    "extract": "extract",
     "extract-input": "extract_input",
     "import-extraction": "import_extraction",
     "job": "job",
-    "correct": "correct",
+    "edit-job": "edit_job",
     "apply": "apply",
     "onboard": "onboard",
     "create-category": "create_category",
-    "write-rules": "write_rules",
+    "save-rules": "save_rules",
     "approve-rules": "approve_rules",
     "add-rules": "add_rules",
     "sales": "sales",
