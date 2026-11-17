@@ -10,7 +10,9 @@ Invoices:
     suppliers                         known rulebooks (slug, title, VAT, draft?)
     rules <slug>                      a rulebook's Markdown
     detect <pdf>                      who issued this invoice
-    extract <pdf> <slug>              read it with that rulebook → job + doubts
+    extract <pdf> <slug>              read it with that rulebook → job + doubts (Claude API)
+    extract-input <pdf> <slug>        prompt + text layer for reading it elsewhere (Codex on the Mac)
+    import-extraction <pdf> <slug>    stdin {"raw": model output} → job + doubts, as extract
     job <job_id>                      current extraction + doubts of a job
     correct <job_id>                  stdin {"qa": [[question, answer], ...]}
     apply <job_id>                    create products + draft invoice in Moloni
@@ -43,7 +45,9 @@ from zoneinfo import ZoneInfo
 
 from app.agent.applier import apply_invoice
 from app.agent.prompts import load_supplier_rules, save_supplier_rules
-from app.agent.runner import extract_invoice
+from app.agent.pdf_text import PdfTextUnavailable, extract_positioned_text
+from app.agent.prompts import build_system_blocks
+from app.agent.runner import _extract_json_object, extract_invoice
 from app.agent.schema import ExtractedInvoice
 from app.config import get_settings
 from app.hava import onboarding as onb
@@ -189,6 +193,40 @@ class Tools:
         if load_supplier_rules(slug) is None:
             raise CliError(f"no rulebook {slug!r}")
         inv = await extract_invoice(data, path.name, slug, self.settings)
+        return self._new_job(path, slug, inv)
+
+    async def extract_input(self, pdf: str, slug: str) -> Any:
+        """Everything another model needs to read this invoice exactly as `extract` does."""
+        data, path = _pdf(pdf)
+        if load_supplier_rules(slug) is None:
+            raise CliError(f"no rulebook {slug!r}")
+        try:
+            text_layer = extract_positioned_text(data)
+        except PdfTextUnavailable:
+            text_layer = None
+        return {
+            "pdf": str(path),
+            "slug": slug,
+            "system": "\n\n".join(b["text"] for b in build_system_blocks(slug)),
+            "text_layer": text_layer,
+            "schema": ExtractedInvoice.model_json_schema(),
+        }
+
+    async def import_extraction(self, pdf: str, slug: str) -> Any:
+        """Validate a model's JSON reading of this invoice and open a job, as `extract` does."""
+        _, path = _pdf(pdf)
+        if load_supplier_rules(slug) is None:
+            raise CliError(f"no rulebook {slug!r}")
+        raw = str(_stdin_json().get("raw") or "")
+        if not raw.strip():
+            raise CliError('stdin must be {"raw": "<model output>"}')
+        try:
+            inv = ExtractedInvoice.model_validate(json.loads(_extract_json_object(raw)))
+        except Exception as e:  # noqa: BLE001 — report what was wrong with the reading
+            raise CliError(f"the reading is not a valid invoice JSON: {e}") from e
+        return self._new_job(path, slug, inv)
+
+    def _new_job(self, path: Path, slug: str, inv: ExtractedInvoice) -> Any:
         job_id = self.store.create_job(
             chat_id=0, pdf_message_id=0, filename=path.name, pdf_path=str(path), sender="hava"
         )
@@ -444,6 +482,8 @@ COMMANDS = {
     "rules": "rules",
     "detect": "detect",
     "extract": "extract",
+    "extract-input": "extract_input",
+    "import-extraction": "import_extraction",
     "job": "job",
     "correct": "correct",
     "apply": "apply",
